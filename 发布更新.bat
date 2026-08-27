@@ -11,9 +11,8 @@ echo.
 REM 读取本地保存的 Token
 if not exist ".publish-token" (
   echo [错误] 找不到 .publish-token 文件！
-  echo 请先在项目目录运行以下命令生成它：
-  echo   powershell -Command "'^protocol=https^nhost=github.com^n' ^| git credential fill"
-  echo 或者重新登录一次 GitHub（git push 会自动保存凭证）。
+  echo 请先在项目目录运行以下 PowerShell 命令重新生成：
+  echo   "protocol=https`nhost=github.com`n" ^| git credential fill ^| Select-String '^password='
   pause
   exit /b 1
 )
@@ -36,20 +35,35 @@ set /p CONFIRM=确认发布？(y/n):
 if /i not "%CONFIRM%"=="y" exit /b 0
 
 echo.
-echo 正在打包并上传（安装包约120MB，上传需要几分钟）...
+echo [1/2] 正在打包并上传（安装包约120MB，需要几分钟）...
 call npx electron-builder --win nsis --publish always
 if errorlevel 1 (
   echo.
-  echo 发布失败！请把上方错误信息发给开发者。
+  echo 打包/上传失败！请把上方错误信息发给开发者。
   pause
   exit /b 1
 )
 
 echo.
+echo [2/2] 正在正式发布 Release（electron-builder 默认建的是草稿，需转为正式版）...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$token = Get-Content '.publish-token' -Raw;" ^
+  "$headers = @{ Authorization = ('token ' + $token); 'User-Agent' = 'qiankun-publish' };" ^
+  "$rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/wangzhendong861925758/qiankun-design/releases' -Headers $headers;" ^
+  "$published = 0;" ^
+  "foreach ($r in $rels) { if ($r.draft) { $body = @{ draft = $false } ^| ConvertTo-Json; Invoke-RestMethod -Method Patch -Uri ('https://api.github.com/repos/wangzhendong861925758/qiankun-design/releases/' + $r.id) -Headers $headers -Body $body -ContentType 'application/json' ^| Out-Null; $published++; echo ('  已正式发布: ' + $r.tag_name) } };" ^
+  "if ($published -eq 0) { echo '  没有草稿需要处理（可能已发布）' }"
+
+echo.
 echo ============================================
 echo   发布成功！
 echo ============================================
-echo 用户打开软件后会自动收到更新提示，
-echo 点击「重启并安装」即可升级到最新版。
+echo 下载页: https://github.com/wangzhendong861925758/qiankun-design/releases
+echo.
+echo 已安装用户打开软件后会自动收到更新提示，
+echo 点击「重启并安装」即可升级到最新版，数据不丢。
+echo.
+echo 注意：刚发布的前几分钟，更新检测可能因 GitHub CDN 缓存而暂时查不到，
+echo       等几分钟再测即可。
 echo.
 pause
