@@ -179,15 +179,35 @@ function renderEpisodes() {
     </div>`).join('');
   $$('.ep-item').forEach(el => el.onclick = () => openEpisode(el.dataset.id));
 }
-async function newEpisode() {
+function newEpisode() {
   const count = S.episodes.length;
-  const name = prompt('分集名称：', '第' + (count + 1) + '集');
-  if (name === null) return;
-  try {
-    await S.api.createEpisode(S.project.id, name.trim());
-    await openProject(S.project.id);
-    toast('已创建分集', 'ok');
-  } catch (e) { toast(e.message, 'err'); }
+  const defName = '第' + (count + 1) + '集';
+  // 注意：Electron 不支持 window.prompt()，必须用应用内弹窗
+  openModal('新建分集', `
+    <div class="form-row"><label>分集名称</label><input id="neName" value="${esc(defName)}"></div>
+    <div class="modal-foot-btns">
+      <button class="btn ghost" id="neCancel">取消</button>
+      <button class="btn primary" id="neCreate">创建并进入编辑</button>
+    </div>`);
+  const inp = $('#neName');
+  inp.focus(); inp.select();
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') $('#neCreate').click(); });
+  $('#neCancel').onclick = closeModal;
+  $('#neCreate').onclick = async () => {
+    const name = $('#neName').value.trim() || defName;
+    const btn = $('#neCreate');
+    btn.disabled = true; btn.textContent = '创建中…';
+    try {
+      const r = await S.api.createEpisode(S.project.id, name);
+      closeModal();
+      await openProject(S.project.id); // 刷新分集列表数据
+      toast('已创建分集「' + name + '」，进入编辑…', 'ok');
+      openEpisode(r.episode.id); // 创建后直接进入创作界面
+    } catch (e) {
+      toast(e.message, 'err', 4000);
+      btn.disabled = false; btn.textContent = '创建并进入编辑';
+    }
+  };
 }
 
 // ================================================================

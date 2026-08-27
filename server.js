@@ -14,7 +14,7 @@ const ADMINS = [
   { username: 'zhaojiawei', password: '123456', name: '管理员-赵' }
 ];
 
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.0.2';
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function nowTs() { return Date.now(); }
 function genCode() { // 生成8位校验码
