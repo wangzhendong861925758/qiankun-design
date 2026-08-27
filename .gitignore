@@ -22,3 +22,4 @@ Thumbs.db
 # 环境变量（含Token，绝不提交）
 .env
 .env.*
+.publish-token
