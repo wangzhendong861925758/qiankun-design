@@ -47,7 +47,24 @@ app.whenReady().then(() => {
   });
   createWindow();
   initUpdater();
+  // 自动启动内嵌协作服务（本机即服务器，避免"先登录才能开服务"的死循环）
+  autoStartServer();
 });
+function autoStartServer() {
+  (async () => {
+    for (const port of [3210, 3211, 3212, 3213]) {
+      try {
+        const { createServer } = require('./server');
+        const dir = path.join(app.getPath('userData'), 'server-data');
+        embedded = createServer(dir, port);
+        console.log('内嵌协作服务已自动启动: http://localhost:' + port);
+        break;
+      } catch (e) {
+        embedded = null; // 端口被占用则尝试下一个
+      }
+    }
+  })();
+}
 app.on('window-all-closed', () => app.quit());
 
 // ---------- 工具 ----------

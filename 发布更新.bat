@@ -28,7 +28,7 @@ set electron_config_cache=%cd%\.electron-cache
 echo 当前版本号:
 findstr /b "version" package.json
 echo.
-echo 提醒：发布新版本前，记得先改 package.json 里的 version（如 1.0.0 改 1.0.1），
+echo 提醒：发布新版本前，记得先改 package.json 里的 version（如 2.0.1 改 2.0.2），
 echo       否则用户收不到更新提示！
 echo.
 set /p CONFIRM=确认发布？(y/n): 
@@ -45,14 +45,24 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/2] 正在正式发布 Release（electron-builder 默认建的是草稿，需转为正式版）...
+echo [2/2] 整理 Release（清理重复草稿并正式发布）...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$token = Get-Content '.publish-token' -Raw;" ^
   "$headers = @{ Authorization = ('token ' + $token); 'User-Agent' = 'qiankun-publish' };" ^
-  "$rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/wangzhendong861925758/qiankun-design/releases' -Headers $headers;" ^
-  "$published = 0;" ^
-  "foreach ($r in $rels) { if ($r.draft) { $body = @{ draft = $false } ^| ConvertTo-Json; Invoke-RestMethod -Method Patch -Uri ('https://api.github.com/repos/wangzhendong861925758/qiankun-design/releases/' + $r.id) -Headers $headers -Body $body -ContentType 'application/json' ^| Out-Null; $published++; echo ('  已正式发布: ' + $r.tag_name) } };" ^
-  "if ($published -eq 0) { echo '  没有草稿需要处理（可能已发布）' }"
+  "$api = 'https://api.github.com/repos/wangzhendong861925758/qiankun-design/releases';" ^
+  "$rels = Invoke-RestMethod -Uri $api -Headers $headers;" ^
+  "$drafts = @($rels ^| Where-Object { $_.draft });" ^
+  "$byTag = $drafts ^| Group-Object tag_name;" ^
+  "foreach ($g in $byTag) {" ^
+  "  if ($g.Count -gt 1) {" ^
+  "    $keep = $g.Group ^| Sort-Object { ($_.assets ^| Measure-Object).Count } -Descending ^| Select-Object -First 1;" ^
+  "    foreach ($d in $g.Group) { if ($d.id -ne $keep.id) { Invoke-RestMethod -Method Delete -Uri ($api + '/' + $d.id) -Headers $headers ^| Out-Null; echo ('  已清理重复草稿: ' + $d.tag_name) } }" ^
+  "  }" ^
+  "}" ^
+  "$rels = Invoke-RestMethod -Uri $api -Headers $headers;" ^
+  "$drafts = @($rels ^| Where-Object { $_.draft });" ^
+  "foreach ($d in $drafts) { $body = @{ draft = $false; prerelease = $false } ^| ConvertTo-Json; Invoke-RestMethod -Method Patch -Uri ($api + '/' + $d.id) -Headers $headers -Body $body -ContentType 'application/json' ^| Out-Null; echo ('  已正式发布: ' + $d.tag_name) };" ^
+  "if ($drafts.Count -eq 0) { echo '  没有草稿需要处理（可能已发布）' }"
 
 echo.
 echo ============================================
@@ -61,7 +71,7 @@ echo ============================================
 echo 下载页: https://github.com/wangzhendong861925758/qiankun-design/releases
 echo.
 echo 已安装用户打开软件后会自动收到更新提示，
-echo 点击「重启并安装」即可升级到最新版，数据不丢。
+echo 点击「保存并重启安装」即可升级，数据不丢。
 echo.
 echo 注意：刚发布的前几分钟，更新检测可能因 GitHub CDN 缓存而暂时查不到，
 echo       等几分钟再测即可。

@@ -127,7 +127,10 @@ async function doLogin() {
       enterAdmin();
     }
   } catch (e) {
-    hint.textContent = e.message || '连接失败';
+    const msg = String(e.message || e);
+    hint.textContent = /failed to fetch|networkerror|load failed/i.test(msg)
+      ? '无法连接服务器：请检查地址是否正确（本机服务已自动启动，管理员可直接用默认地址登录）'
+      : (msg || '连接失败');
   } finally {
     $('#btnLogin').disabled = false; $('#btnLogin').textContent = '登 录';
   }
@@ -1006,6 +1009,7 @@ function initUpdaterUI() {
   });
   window.mochi.onUpdaterEvent('error', () => { });
   $('#btnCheckUpdate').onclick = async () => {
+    if (S.updateReady) return $('#btnInstallUpdate').click();
     const fab = $('#btnCheckUpdate');
     fab.textContent = '⏳';
     const r = await window.mochi.checkUpdate();

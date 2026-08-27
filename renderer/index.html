@@ -33,6 +33,7 @@
     </div>
     <button class="btn primary block" id="btnLogin">登 录</button>
     <p class="login-hint" id="loginHint"></p>
+    <p class="login-tip">💡 本机服务已自动启动，管理员用默认地址即可登录；<br>普通成员请填写服务器地址 + 校验码</p>
     <p class="login-ver" id="verBadge"></p>
   </div>
 </div>
@@ -82,14 +83,6 @@
       <button class="btn primary" id="btnCompose">🎬 生成视频</button>
     </div>
   </header>
-  <!-- 更新提示条 -->
-  <div class="update-bar hidden" id="updateBar">
-    <span id="updateBarText"></span>
-    <div class="update-bar-actions">
-      <button class="btn primary small" id="btnInstallUpdate">保存并重启安装</button>
-      <button class="btn ghost small" id="btnDismissUpdate">稍后</button>
-    </div>
-  </div>
   <div class="editor-grid">
     <!-- 第1列：剧本 -->
     <section class="col col-script">
@@ -146,6 +139,15 @@
     <button class="admin-tab" data-tab="server">🖥 服务管理</button>
   </div>
   <div class="page-body" id="adminBody"></div>
+</div>
+
+<!-- 更新提示条（全局，任何页面都可见） -->
+<div class="update-bar hidden" id="updateBar">
+  <span id="updateBarText"></span>
+  <div class="update-bar-actions">
+    <button class="btn primary small" id="btnInstallUpdate">保存并重启安装</button>
+    <button class="btn ghost small" id="btnDismissUpdate">稍后</button>
+  </div>
 </div>
 
 <!-- 更新悬浮按钮 -->

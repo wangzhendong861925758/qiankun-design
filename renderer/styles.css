@@ -59,6 +59,7 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 6px
 .login-tab.active { background: var(--bg4); color: var(--text); border-color: var(--accent); }
 .login-box .form-row { margin-bottom: 14px; }
 .login-hint { color: var(--err); font-size: 12px; text-align: center; min-height: 18px; margin-top: 12px; }
+.login-tip { color: var(--text3); font-size: 11px; text-align: center; line-height: 1.7; margin-top: 8px; }
 .login-ver { text-align: center; color: var(--text3); font-size: 11px; margin-top: 4px; }
 
 /* ===== 顶栏 ===== */
@@ -188,7 +189,7 @@ video.preview-video { width: 100%; max-height: 56vh; border-radius: 10px; backgr
 @keyframes toastIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ===== 更新 ===== */
-.update-bar { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: linear-gradient(90deg, rgba(124,92,255,.22), rgba(92,139,255,.18)); border-bottom: 1px solid var(--line2); padding: 9px 18px; font-size: 13px; flex-shrink: 0; }
+.update-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 150; display: flex; align-items: center; justify-content: space-between; gap: 14px; background: linear-gradient(90deg, rgba(124,92,255,.92), rgba(92,139,255,.88)); border-bottom: 1px solid var(--line2); padding: 9px 18px; font-size: 13px; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
 .update-bar-actions { display: flex; gap: 8px; }
 .update-fab { position: fixed; right: 18px; bottom: 18px; z-index: 90; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line2); background: var(--bg3); color: var(--text2); font-size: 17px; cursor: pointer; transition: all .15s; }
 .update-fab:hover { border-color: var(--accent); transform: rotate(90deg); }
