@@ -2,242 +2,167 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' mochi-file: data: blob:; media-src 'self' mochi-file: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'">
-<title>乾坤设计 - AI漫剧编辑器</title>
+<title>乾坤设计 - AI漫剧协作平台</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<!-- ===== 顶部栏 ===== -->
-<header class="topbar">
-  <div class="topbar-left">
-    <div class="logo">☯ <span>乾坤设计</span></div>
-    <div class="divider-v"></div>
-    <input id="projectName" class="project-name-input" value="未命名漫剧" spellcheck="false" title="点击修改作品名称">
-    <div class="proj-meta" id="projMeta">0 个分镜 · 0 个资产</div>
-  </div>
-  <div class="topbar-right">
-    <div class="aspect-switch" id="aspectSwitch" title="画幅比例">
-      <button data-v="9:16" class="active">竖屏 9:16</button>
-      <button data-v="16:9">横屏 16:9</button>
+<!-- ============ 登录页 ============ -->
+<div class="page" id="page-login">
+  <div class="login-box">
+    <div class="login-logo">☯</div>
+    <h1>乾坤设计</h1>
+    <p class="login-sub">AI 漫剧协作平台</p>
+    <div class="form-row">
+      <label>服务器地址</label>
+      <input id="loginServer" placeholder="例如 http://192.168.1.100:3210">
     </div>
-    <button class="btn ghost" id="btnModelCfg">⚙ 模型配置</button>
-    <button class="btn ghost" id="btnCheckUpdate" title="检查新版本">🔄 <span id="updateBtnText">检查更新</span></button>
-    <button class="btn primary" id="btnCompose" disabled>🎬 生成视频</button>
-  </div>
-</header>
-
-<!-- 更新提示条 -->
-<div class="update-bar hidden" id="updateBar">
-  <span id="updateBarText"></span>
-  <div class="update-bar-actions">
-    <button class="btn primary small" id="btnInstallUpdate">重启并安装</button>
-    <button class="btn ghost small" id="btnDismissUpdate">稍后</button>
-  </div>
-</div>
-
-<!-- ===== 主体 ===== -->
-<div class="main">
-
-  <!-- 左侧：分镜表 -->
-  <section class="editor">
-    <!-- 工具栏 -->
-    <div class="toolbar">
-      <button class="btn" id="btnParseScript">✨ AI拆解剧本</button>
-      <button class="btn" id="btnAddShot">＋ 添加分镜</button>
-      <button class="btn" id="btnAutoMatch">🔗 自动匹配资产</button>
-      <button class="btn" id="btnBatchVoice">🎙 批量生成配音</button>
-      <div class="spacer"></div>
-      <span class="ver-badge" id="verBadge"></span>
-      <button class="btn ghost small" id="btnSaveProject" title="保存到本地">💾 保存</button>
+    <div class="login-tabs">
+      <button class="login-tab active" data-mode="user">校验码登录</button>
+      <button class="login-tab" data-mode="admin">管理员登录</button>
     </div>
-
-    <!-- 分镜表格 -->
-    <div class="shots-table-wrap" id="shotsTableWrap">
-      <table class="shots-table">
-        <thead>
-          <tr>
-            <th class="col-idx">#</th>
-            <th class="col-script">剧本</th>
-            <th class="col-char">出场人物</th>
-            <th class="col-scene">场景</th>
-            <th class="col-prop">道具</th>
-            <th class="col-other">其他</th>
-            <th class="col-aux">辅助(配音/音效)</th>
-            <th class="col-story">分镜图</th>
-            <th class="col-video">视频</th>
-            <th class="col-op">操作</th>
-          </tr>
-        </thead>
-        <tbody id="shotsBody"></tbody>
-      </table>
-      <div class="empty-tip" id="emptyTip">
-        <div class="empty-icon">🎬</div>
-        <p>还没有分镜</p>
-        <p class="sub">点击上方「AI拆解剧本」粘贴小说/脚本，AI 自动拆分并识别人物、场景、道具</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 右侧：资产面板 -->
-  <aside class="assets-panel">
-    <div class="panel-head">
-      <span class="panel-title">资产库</span>
-      <button class="btn primary small" id="btnNewAsset">＋ 新建</button>
-    </div>
-    <div class="asset-tabs" id="assetTabs">
-      <button data-tab="characters" class="active">人物 <em id="cntCharacters">0</em></button>
-      <button data-tab="scenes">场景 <em id="cntScenes">0</em></button>
-      <button data-tab="props">道具 <em id="cntProps">0</em></button>
-      <button data-tab="others">其他 <em id="cntOthers">0</em></button>
-      <button data-tab="sfx">音效 <em id="cntSfx">0</em></button>
-    </div>
-    <div class="asset-grid" id="assetGrid"></div>
-    <div class="panel-tip" id="assetTip">提示：拖拽卡片到分镜槽位即可绑定；点击卡片可编辑，人物可绑定配音音色</div>
-  </aside>
-</div>
-
-<!-- ===== 弹窗：AI拆解剧本 ===== -->
-<div class="modal-mask hidden" id="modalScript">
-  <div class="modal">
-    <div class="modal-head"><h3>✨ AI拆解剧本</h3><button class="close" data-close>✕</button></div>
-    <div class="modal-body">
-      <p class="hint">粘贴小说/脚本文本，AI 将自动拆分分镜，并识别人物、场景、道具、台词（使用「模型配置」中的文本模型）</p>
-      <textarea id="scriptInput" class="script-input" placeholder="在此粘贴剧本…&#10;&#10;例：深夜，林凡独自走在老巷里，手里握着一盏破旧的路灯。突然，黑影从屋顶掠过。&#10;林凡低声道：谁在那里？"></textarea>
-      <label class="check-line"><input type="checkbox" id="chkReplace" checked> 替换现有分镜（不勾选则追加）</label>
-    </div>
-    <div class="modal-foot">
-      <button class="btn ghost" data-close>取消</button>
-      <button class="btn primary" id="btnDoParse">开始拆解</button>
-    </div>
-  </div>
-</div>
-
-<!-- ===== 弹窗：模型配置（三组独立模型） ===== -->
-<div class="modal-mask hidden" id="modalModel">
-  <div class="modal modal-wide">
-    <div class="modal-head"><h3>⚙ 模型配置</h3><button class="close" data-close>✕</button></div>
-    <div class="modal-body">
-      <p class="hint">三组模型独立配置（OpenAI 兼容格式）。数据仅保存在本机，不会上传。</p>
-
-      <div class="cfg-section">
-        <div class="cfg-title">📝 文本模型 <span>负责：剧本拆解、台词识别、文案处理</span></div>
-        <div class="form-row"><label>API 地址 (Base URL)</label><input id="txtBaseUrl" placeholder="例如 https://api.deepseek.com/v1"></div>
-        <div class="form-row half"><label>API Key</label><input id="txtApiKey" type="password" placeholder="sk-…（留空表示无需鉴权）"></div>
-        <div class="form-row half"><label>模型名称</label><input id="txtModel" placeholder="例如 deepseek-chat / gpt-4o-mini / qwen-plus"></div>
-      </div>
-
-      <div class="cfg-section">
-        <div class="cfg-title">🖼 图片模型 <span>负责：人物/场景/道具资产图、分镜图生成</span></div>
-        <div class="form-row"><label>API 地址 (Base URL)</label><input id="imgBaseUrl" placeholder="例如 https://api.openai.com/v1"></div>
-        <div class="form-row half"><label>API Key</label><input id="imgApiKey" type="password" placeholder="sk-…"></div>
-        <div class="form-row half"><label>模型名称</label><input id="imgModel" placeholder="例如 dall-e-3 / flux / cogview-3"></div>
-      </div>
-
-      <div class="cfg-section">
-        <div class="cfg-title">🎬 视频模型 <span>负责：最终成片画面（综合剧本+人物+场景+道具+台词生成）</span></div>
-        <div class="form-row"><label>API 地址 (Base URL)</label><input id="vidBaseUrl" placeholder="例如 https://api.xxx.com/v1（需支持 /videos/generations）"></div>
-        <div class="form-row half"><label>API Key</label><input id="vidApiKey" type="password" placeholder="sk-…"></div>
-        <div class="form-row half"><label>模型名称</label><input id="vidModel" placeholder="例如 sora / kling / cogvideox"></div>
-        <p class="hint sub">未配置视频模型时，「生成视频」使用本地方案（分镜图+配音+字幕合成）。配置后每镜由视频模型生成画面，再自动混入配音音效。</p>
-      </div>
-
-      <button class="btn ghost small" id="btnTestApi">测试文本模型连接</button>
-      <span id="apiTestResult" class="test-result"></span>
-    </div>
-    <div class="modal-foot">
-      <button class="btn ghost" data-close>取消</button>
-      <button class="btn primary" id="btnSaveCfg">保存配置</button>
-    </div>
-  </div>
-</div>
-
-<!-- ===== 弹窗：资产编辑 ===== -->
-<div class="modal-mask hidden" id="modalAsset">
-  <div class="modal">
-    <div class="modal-head"><h3 id="assetModalTitle">编辑资产</h3><button class="close" data-close>✕</button></div>
-    <div class="modal-body">
+    <div id="loginUserBox">
       <div class="form-row">
-        <label>类型</label>
-        <select id="assetType">
-          <option value="characters">人物</option>
-          <option value="scenes">场景</option>
-          <option value="props">道具</option>
-          <option value="others">其他</option>
-          <option value="sfx">音效(辅助)</option>
-        </select>
-      </div>
-      <div class="form-row"><label>名称</label><input id="assetName" placeholder="资产名称"></div>
-      <div class="form-row"><label>描述（生成时作为参考）</label><textarea id="assetDesc" rows="2" placeholder="外形/性格/风格描述，生成视频时将作为参考"></textarea></div>
-      <div class="form-row">
-        <label>参考图（可用图片模型AI生成）</label>
-        <div class="img-row">
-          <div class="img-uploader" id="assetImgUploader">
-            <img id="assetImgPreview" class="hidden">
-            <div class="upload-placeholder" id="assetImgPlaceholder">点击上传图片</div>
-          </div>
-          <button class="btn small" id="btnAiGenAssetImg" title="用图片模型生成资产图（依据名称+描述）">✨ AI生成</button>
-        </div>
-      </div>
-      <div class="form-row" id="rowAssetAudio">
-        <label>音频文件</label>
-        <div class="img-uploader audio" id="assetAudioUploader">
-          <audio id="assetAudioPreview" controls class="hidden"></audio>
-          <div class="upload-placeholder" id="assetAudioPlaceholder">点击上传音频(mp3/wav)</div>
-        </div>
-      </div>
-      <!-- 人物专属：配音绑定 -->
-      <div id="voiceBindSection" class="voice-bind hidden">
-        <div class="vb-title">🎙 配音绑定（该人物台词使用此音色）</div>
-        <div class="form-row"><label>音色</label><select id="voiceSelect"></select></div>
-        <div class="form-row"><label>语速 <em id="rateVal">0%</em></label><input type="range" id="voiceRate" min="-50" max="50" value="0"></div>
-        <div class="form-row"><label>音调 <em id="pitchVal">0</em></label><input type="range" id="voicePitch" min="-20" max="20" value="0"></div>
-        <div class="form-row">
-          <label>试听文本</label>
-          <div class="try-row">
-            <input id="tryText" value="你好，我是本作的登场角色。">
-            <button class="btn small" id="btnTryVoice">试听</button>
-          </div>
-        </div>
+        <label>校验码</label>
+        <input id="loginCode" placeholder="请输入管理员分配的校验码" autocomplete="off">
       </div>
     </div>
-    <div class="modal-foot">
-      <button class="btn danger" id="btnDeleteAsset">删除</button>
-      <button class="btn ghost" data-close>取消</button>
-      <button class="btn primary" id="btnSaveAsset">保存</button>
+    <div id="loginAdminBox" class="hidden">
+      <div class="form-row"><label>管理员账号</label><input id="loginAdminUser" placeholder="账号" autocomplete="off"></div>
+      <div class="form-row"><label>密码</label><input id="loginAdminPass" type="password" placeholder="密码"></div>
     </div>
+    <button class="btn primary block" id="btnLogin">登 录</button>
+    <p class="login-hint" id="loginHint"></p>
+    <p class="login-ver" id="verBadge"></p>
   </div>
 </div>
 
-<!-- ===== 弹窗：视频生成进度 ===== -->
-<div class="modal-mask hidden" id="modalCompose">
-  <div class="modal small-modal">
-    <div class="modal-head"><h3>🎬 视频生成中</h3></div>
-    <div class="modal-body">
-      <div class="progress-wrap"><div class="progress-bar" id="composeBar"><span>0%</span></div></div>
-      <p class="hint center" id="composeMsg">准备中…</p>
-      <p class="hint center sub" id="composeRef"></p>
+<!-- ============ 项目列表页 ============ -->
+<div class="page hidden" id="page-projects">
+  <header class="topbar">
+    <div class="topbar-left"><div class="logo">☯ <span>乾坤设计</span></div></div>
+    <div class="topbar-right">
+      <span class="presence-badge" id="projUserBadge"></span>
+      <span class="ver-badge" id="projVerBadge"></span>
+      <button class="btn ghost" id="btnLogout1">退出登录</button>
+    </div>
+  </header>
+  <div class="page-body">
+    <div class="page-head"><h2>选择项目</h2><p class="page-desc">项目由管理员创建，所有成员共享项目下的人物、场景、道具、音频资产，并可实时共创。</p></div>
+    <div class="proj-grid" id="projGrid"></div>
+  </div>
+</div>
+
+<!-- ============ 分集列表页 ============ -->
+<div class="page hidden" id="page-episodes">
+  <header class="topbar">
+    <div class="topbar-left"><button class="btn ghost small" id="btnBackProj">← 项目</button><div class="logo small">🜂 <span id="epProjName"></span></div></div>
+    <div class="topbar-right"><button class="btn primary" id="btnNewEpisode">＋ 新建分集</button></div>
+  </header>
+  <div class="page-body">
+    <div class="page-head"><h2>分集列表</h2><p class="page-desc">每集独立剧本与分镜；资产全项目共享。点击进入编辑，多人可同时编辑同一集。</p></div>
+    <div class="ep-list" id="epList"></div>
+  </div>
+</div>
+
+<!-- ============ 编辑器页 ============ -->
+<div class="page hidden" id="page-editor">
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="btn ghost small" id="btnBackEps">← 分集</button>
+      <div class="logo small">🎬 <span id="edEpisodeName"></span></div>
+      <span class="save-badge" id="saveBadge">已实时保存</span>
+      <span class="presence-badge" id="presenceBadge"></span>
+    </div>
+    <div class="topbar-right">
+      <select class="model-sel" id="selTextModel" title="文本模型"></select>
+      <select class="model-sel" id="selImageModel" title="图片模型"></select>
+      <select class="model-sel" id="selVideoModel" title="视频模型"></select>
+      <span class="ver-badge">480P</span>
+      <button class="btn primary" id="btnCompose">🎬 生成视频</button>
+    </div>
+  </header>
+  <!-- 更新提示条 -->
+  <div class="update-bar hidden" id="updateBar">
+    <span id="updateBarText"></span>
+    <div class="update-bar-actions">
+      <button class="btn primary small" id="btnInstallUpdate">保存并重启安装</button>
+      <button class="btn ghost small" id="btnDismissUpdate">稍后</button>
     </div>
   </div>
-</div>
-
-<!-- ===== 弹窗：预览播放 ===== -->
-<div class="modal-mask hidden" id="modalPreview">
-  <div class="modal preview-modal">
-    <div class="modal-head"><h3 id="previewTitle">预览</h3><button class="close" data-close>✕</button></div>
-    <div class="modal-body center" id="previewBody"></div>
+  <div class="editor-grid">
+    <!-- 第1列：剧本 -->
+    <section class="col col-script">
+      <div class="col-head">
+        <h3>📝 剧本</h3>
+        <div>
+          <button class="btn ghost small" id="btnParseScript" title="AI拆解剧本为分镜">✨ AI拆解</button>
+        </div>
+      </div>
+      <div class="col-body">
+        <textarea id="scriptInput" placeholder="在此输入或粘贴剧本文本……&#10;&#10;点击「AI拆解」自动分析为分镜（含人物/场景/道具识别、台词提取）。"></textarea>
+        <div class="script-meta">
+          <label>画幅</label>
+          <select id="aspectSel"><option value="9:16">9:16 竖屏</option><option value="16:9">16:9 横屏</option></select>
+        </div>
+      </div>
+    </section>
+    <!-- 第2列：分镜 -->
+    <section class="col col-story">
+      <div class="col-head"><h3 id="storyColTitle">🎞 分镜</h3><button class="btn ghost small" id="btnAddShot">＋ 添加分镜</button></div>
+      <div class="col-body" id="shotsWrap"></div>
+    </section>
+    <!-- 第3列：资产（人物/场景/道具/其他/音效） -->
+    <section class="col col-assets">
+      <div class="col-head">
+        <h3>📦 资产库 <span class="col-sub" id="assetProjTag"></span></h3>
+        <button class="btn ghost small" id="btnAddAsset">＋ 新增资产</button>
+      </div>
+      <div class="asset-tabs" id="assetTabs">
+        <button class="asset-tab active" data-tab="characters">👥 人物</button>
+        <button class="asset-tab" data-tab="scenes">🏞 场景</button>
+        <button class="asset-tab" data-tab="props">🗡 道具</button>
+        <button class="asset-tab" data-tab="others">✨ 其他</button>
+        <button class="asset-tab" data-tab="sfx">🔊 音效</button>
+      </div>
+      <div class="col-body" id="assetsWrap"></div>
+    </section>
   </div>
 </div>
 
-<!-- ===== 浮层：资产选择器（绑定槽位） ===== -->
-<div class="picker-pop hidden" id="pickerPop">
-  <div class="picker-head"><span id="pickerTitle">选择资产</span><button class="close" id="pickerClose">✕</button></div>
-  <div class="picker-list" id="pickerList"></div>
+<!-- ============ 管理端页 ============ -->
+<div class="page hidden" id="page-admin">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">🛡 <span>乾坤设计 · 管理端</span></div>
+      <span class="admin-name" id="adminName"></span>
+    </div>
+    <div class="topbar-right"><span class="ver-badge" id="adminVerBadge"></span><button class="btn ghost" id="btnLogout2">退出</button></div>
+  </header>
+  <div class="admin-tabs">
+    <button class="admin-tab active" data-tab="stats">📊 数据统计</button>
+    <button class="admin-tab" data-tab="users">👤 管理用户</button>
+    <button class="admin-tab" data-tab="projects">📁 项目管理</button>
+    <button class="admin-tab" data-tab="server">🖥 服务管理</button>
+  </div>
+  <div class="page-body" id="adminBody"></div>
+</div>
+
+<!-- 更新悬浮按钮 -->
+<button class="update-fab" id="btnCheckUpdate" title="检查更新">🔄</button>
+
+<!-- ============ 通用弹窗 ============ -->
+<div class="modal-mask hidden" id="modalMask">
+  <div class="modal" id="modalBox">
+    <div class="modal-head"><h3 id="modalTitle">弹窗</h3><button class="close" id="modalClose">✕</button></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
 </div>
 
 <!-- Toast -->
-<div id="toast" class="toast hidden"></div>
+<div class="toast-wrap" id="toastWrap"></div>
 
+<script src="api.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

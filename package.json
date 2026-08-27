@@ -1,11 +1,12 @@
 {
   "name": "qiankun-design",
-  "version": "1.0.0",
-  "description": "乾坤设计 - AI漫剧编辑器（桌面版）",
+  "version": "2.0.0",
+  "description": "乾坤设计 - AI漫剧协作平台（桌面版）",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis",
+    "server": "node server.js",
+    "dist": "electron-builder --win nsis --publish never",
     "dist:publish": "electron-builder --win nsis --publish always"
   },
   "keywords": [],
@@ -14,12 +15,14 @@
   "type": "commonjs",
   "devDependencies": {
     "electron": "^44.0.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.0.12"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "electron-updater": "^6.8.9",
-    "msedge-tts": "^2.0.7"
+    "electron-updater": "^6.3.9",
+    "express": "^4.22.2",
+    "msedge-tts": "^2.0.7",
+    "ws": "^8.21.3"
   },
   "build": {
     "appId": "com.qiankun.design",
@@ -31,6 +34,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "server.js",
       "renderer/**/*",
       "build/icon.png",
       "package.json"

@@ -1,974 +1,1072 @@
-/* 乾坤设计 渲染进程逻辑 */
+// 乾坤设计 v2 - 客户端主逻辑
 'use strict';
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const esc = s => String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const fmtTime = ts => { if (!ts) return '-'; const d = new Date(ts); return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const fmtDur = s => { s = Math.round(Number(s) || 0); return Math.floor(s / 60) + '分' + String(s % 60).padStart(2, '0') + '秒'; };
 
-// ================= 状态 =================
-const state = {
-  project: null,
-  config: null,
-  voices: [],
-  activeTab: 'characters',
-  picker: null,
-  editingAsset: null,
-  composing: false,
-  saveTimer: null,
-  updateState: null // {version} 当有已下载的更新
+// ---------- 全局状态 ----------
+const S = {
+  base: localStorage.getItem('qk_base') || 'http://localhost:3210',
+  token: '', user: null, admin: null,
+  api: null, collab: new Collab(),
+  page: 'login', loginMode: 'user',
+  projects: [], project: null, episodes: [], episode: null, data: null,
+  assetTab: 'characters',
+  sel: { text: '', image: '', video: '' },
+  composing: false, updateReady: null, wsRetryTimer: null
 };
+const VOICES = [
+  ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
+  ['zh-CN-XiaoyiNeural', '晓伊(女·活泼)'], ['zh-CN-YunjianNeural', '云健(男·浑厚)'], ['zh-CN-liaoning-XiaobeiNeural', '小北(东北)'],
+  ['zh-TW-HsiaoChenNeural', '晓臻(台湾)'], ['zh-HK-HiuMaanNeural', '曉曼(粤语)']
+];
 
-const DEFAULT_VOICE = 'zh-CN-XiaoxiaoNeural';
-const TYPE_META = {
-  characters: { label: '人物', ico: '🧑' },
-  scenes: { label: '场景', ico: '🏞' },
-  props: { label: '道具', ico: '📦' },
-  others: { label: '其他', ico: '✨' },
-  sfx: { label: '音效', ico: '🎵' }
-};
+// ---------- Toast / 弹窗 ----------
+function toast(msg, type, ms) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type || '');
+  el.textContent = msg;
+  $('#toastWrap').appendChild(el);
+  setTimeout(() => el.remove(), ms || 2600);
+}
+function openModal(title, html, wide) {
+  $('#modalTitle').textContent = title;
+  $('#modalBody').innerHTML = html;
+  $('#modalBox').classList.toggle('modal-wide', !!wide);
+  $('#modalMask').classList.remove('hidden');
+}
+function closeModal() { $('#modalMask').classList.add('hidden'); $('#modalBody').innerHTML = ''; }
+$('#modalClose').onclick = closeModal;
+$('#modalMask').addEventListener('click', e => { if (e.target === $('#modalMask')) closeModal(); });
 
-// ================= 工具 =================
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => Array.from(document.querySelectorAll(s));
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-function toast(msg, type = '', ms = 2600) {
-  const t = $('#toast');
-  t.textContent = msg;
-  t.className = 'toast ' + type;
-  clearTimeout(t._tm);
-  t._tm = setTimeout(() => t.classList.add('hidden'), ms);
+// ---------- 页面切换 ----------
+function showPage(name) {
+  S.page = name;
+  ['login', 'projects', 'episodes', 'editor', 'admin'].forEach(p => {
+    $('#page-' + p).classList.toggle('hidden', p !== name);
+  });
 }
 
-function defaultProject() {
-  return {
-    id: uid(), name: '未命名漫剧', aspect: '9:16',
-    createdAt: Date.now(), updatedAt: Date.now(),
-    script: '', shots: [],
-    assets: { characters: [], scenes: [], props: [], others: [], sfx: [] },
-    lastCompose: null
-  };
+// ---------- 文件选择 ----------
+function pickFile(accept) {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = accept || '';
+    inp.onchange = () => {
+      const f = inp.files[0];
+      if (!f) return resolve(null);
+      const fr = new FileReader();
+      fr.onload = () => resolve({ name: f.name, dataBase64: String(fr.result).split(',')[1] });
+      fr.readAsDataURL(f);
+    };
+    inp.click();
+  });
+}
+async function uploadPicked(accept) {
+  const f = await pickFile(accept);
+  if (!f) return null;
+  const r = await S.api.upload(f.name, f.dataBase64);
+  return r.url; // 相对路径 /assets/xxx
+}
+function extractJSON(text) {
+  const t = String(text || '').trim();
+  const tryParse = s => { try { return JSON.parse(s); } catch (e) { return undefined; } };
+  let r = tryParse(t);
+  if (r) return r;
+  const m = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (m) { r = tryParse(m[1].trim()); if (r) return r; }
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a >= 0 && b > a) { r = tryParse(t.slice(a, b + 1)); if (r) return r; }
+  throw new Error('AI 返回的不是有效 JSON');
 }
 
-function getAsset(type, id) {
-  return (state.project.assets[type] || []).find(a => a.id === id) || null;
+// ================================================================
+// 登录页
+// ================================================================
+function initLogin() {
+  $('#loginServer').value = S.base;
+  $$('.login-tab').forEach(t => t.onclick = () => {
+    $$('.login-tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    S.loginMode = t.dataset.mode;
+    $('#loginUserBox').classList.toggle('hidden', S.loginMode !== 'user');
+    $('#loginAdminBox').classList.toggle('hidden', S.loginMode !== 'admin');
+  });
+  $('#loginCode').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  $('#loginAdminPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  $('#btnLogin').onclick = doLogin;
 }
-function getShot(id) {
-  return state.project.shots.find(s => s.id === id) || null;
-}
-function countAssetUsed(type, id) {
-  let n = 0;
-  for (const s of state.project.shots) {
-    if (type === 'characters' && s.characters.includes(id)) n++;
-    if (type === 'scenes' && s.scene === id) n++;
-    if (type === 'props' && s.props.includes(id)) n++;
-    if (type === 'others' && s.others.includes(id)) n++;
-    if (type === 'sfx' && s.sfxId === id) n++;
+async function doLogin() {
+  const base = $('#loginServer').value.trim().replace(/\/+$/, '');
+  const hint = $('#loginHint');
+  hint.textContent = '';
+  if (!/^https?:\/\/.+/.test(base)) { hint.textContent = '服务器地址格式不正确（应以 http:// 开头）'; return; }
+  $('#btnLogin').disabled = true; $('#btnLogin').textContent = '连接中…';
+  try {
+    const probe = new Api(base, '');
+    await probe.health(); // 探活
+    if (S.loginMode === 'user') {
+      const code = $('#loginCode').value.trim();
+      if (!code) { hint.textContent = '请输入校验码'; return; }
+      const r = await probe.login(code);
+      S.base = base; S.token = r.token; S.user = r.user;
+      localStorage.setItem('qk_base', base);
+      S.api = new Api(base, r.token);
+      initCollab();
+      await loadProjects();
+    } else {
+      const u = $('#loginAdminUser').value.trim(), p = $('#loginAdminPass').value;
+      if (!u || !p) { hint.textContent = '请输入管理员账号和密码'; return; }
+      const r = await probe.adminLogin(u, p);
+      S.base = base; S.token = r.token; S.admin = r.admin;
+      localStorage.setItem('qk_base', base);
+      S.api = new Api(base, r.token);
+      enterAdmin();
+    }
+  } catch (e) {
+    hint.textContent = e.message || '连接失败';
+  } finally {
+    $('#btnLogin').disabled = false; $('#btnLogin').textContent = '登 录';
   }
-  return n;
 }
 
-function scheduleSave() {
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => {
-    window.mochi.saveProject(state.project);
-  }, 800);
+// ================================================================
+// 项目页 / 分集页
+// ================================================================
+async function loadProjects() {
+  S.projects = await S.api.projects();
+  $('#projUserBadge').textContent = '👤 ' + (S.user ? S.user.name : '');
+  renderProjects();
+  showPage('projects');
+}
+function renderProjects() {
+  const g = $('#projGrid');
+  if (!S.projects.length) { g.innerHTML = '<div class="proj-empty">暂无项目，请联系管理员在管理端创建</div>'; return; }
+  g.innerHTML = S.projects.map(p => `
+    <div class="proj-card" data-id="${p.id}">
+      <div class="pc-icon">📁</div>
+      <h3>${esc(p.name)}</h3>
+      <div class="pc-meta"><span>🎬 ${p.episodeCount} 集</span><span>🕐 ${fmtTime(p.updatedAt)}</span></div>
+      <div class="pc-enter">进入项目 →</div>
+    </div>`).join('');
+  $$('.proj-card').forEach(c => c.onclick = () => openProject(c.dataset.id));
+}
+async function openProject(id) {
+  try {
+    const r = await S.api.project(id);
+    S.project = r.project; S.episodes = r.episodes;
+    $('#epProjName').textContent = S.project.name;
+    renderEpisodes();
+    showPage('episodes');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderEpisodes() {
+  const w = $('#epList');
+  if (!S.episodes.length) { w.innerHTML = '<div class="ep-empty">还没有分集，点击右上角「新建分集」开始创作</div>'; return; }
+  w.innerHTML = S.episodes.map(e2 => `
+    <div class="ep-item" data-id="${e2.id}">
+      <div>
+        <div class="ep-name">${esc(e2.name)}</div>
+        <div class="ep-meta"><span>🕐 更新 ${fmtTime(e2.updatedAt)}</span><span>✍️ ${esc(e2.updatedBy || '-')}</span></div>
+      </div>
+      <button class="btn primary small">进入编辑 →</button>
+    </div>`).join('');
+  $$('.ep-item').forEach(el => el.onclick = () => openEpisode(el.dataset.id));
+}
+async function newEpisode() {
+  const count = S.episodes.length;
+  const name = prompt('分集名称：', '第' + (count + 1) + '集');
+  if (name === null) return;
+  try {
+    await S.api.createEpisode(S.project.id, name.trim());
+    await openProject(S.project.id);
+    toast('已创建分集', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
 }
 
-// ================= 渲染：分镜表 =================
-function renderAll() {
+// ================================================================
+// 编辑器
+// ================================================================
+function videoMode() {
+  const vm = (S.project.models.video || []).find(m => m.id === S.sel.video);
+  return vm ? (vm.type || 'allref') : 'allref';
+}
+async function openEpisode(id) {
+  try {
+    const r = await S.api.episode(id);
+    S.episode = r.episode;
+    S.data = Object.assign({ aspect: '9:16', script: '', shots: [] }, r.data);
+    if (!Array.isArray(S.data.shots)) S.data.shots = [];
+    $('#edEpisodeName').textContent = S.project.name + ' · ' + S.episode.name;
+    $('#assetProjTag').textContent = '（' + S.project.name + ' 全员共享）';
+    // 模型选择恢复
+    const saved = JSON.parse(localStorage.getItem('qk_sel_' + S.project.id) || '{}');
+    S.sel = { text: saved.text || '', image: saved.image || '', video: saved.video || '' };
+    renderModelSels();
+    renderEditor();
+    showPage('editor');
+    // 实时协作
+    S.collab.connect(S.base, S.token);
+    S.collab.join(S.project.id, S.episode.id);
+    setSaveState(true);
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderModelSels() {
+  const mk = (elId, list, key, label) => {
+    const el = $(elId);
+    if (!list.length) { el.innerHTML = '<option value="">未配置' + label + '</option>'; el.disabled = true; return; }
+    if (!list.some(m => m.id === S.sel[key])) S.sel[key] = list[0].id;
+    el.innerHTML = list.map(m => `<option value="${m.id}">${esc(m.name)}${key === 'video' ? (m.type === 'firstlast' ? '（首尾帧）' : '（全能参考）') : ''}</option>`).join('');
+    el.value = S.sel[key];
+    el.disabled = false;
+    el.onchange = () => {
+      S.sel[key] = el.value;
+      localStorage.setItem('qk_sel_' + S.project.id, JSON.stringify(S.sel));
+      if (key === 'video') renderEditor(); // 切换模式刷新分镜列
+    };
+  };
+  mk('#selTextModel', S.project.models.text || [], 'text', '文本模型');
+  mk('#selImageModel', S.project.models.image || [], 'image', '图片模型');
+  mk('#selVideoModel', S.project.models.video || [], 'video', '视频模型');
+}
+function renderEditor() {
+  $('#scriptInput').value = S.data.script || '';
+  $('#aspectSel').value = S.data.aspect || '9:16';
   renderShots();
   renderAssets();
-  renderMeta();
 }
+function shotById(id) { return S.data.shots.find(s => s.id === id); }
+function assetsOf(kind) { return (S.project.assets && S.project.assets[kind]) || []; }
 
-function renderMeta() {
-  const p = state.project;
-  const totalAssets = Object.values(p.assets).reduce((s, l) => s + l.length, 0);
-  $('#projMeta').textContent = `${p.shots.length} 个分镜 · ${totalAssets} 个资产`;
-  $('#cntCharacters').textContent = p.assets.characters.length;
-  $('#cntScenes').textContent = p.assets.scenes.length;
-  $('#cntProps').textContent = p.assets.props.length;
-  $('#cntOthers').textContent = p.assets.others.length;
-  $('#cntSfx').textContent = p.assets.sfx.length;
-  $('#btnCompose').disabled = state.composing || p.shots.length === 0;
-}
-
-function chipHTML(type, a) {
-  const img = a.img ? `<img src="${esc(a.img)}">` : `<span class="chip-ico">${TYPE_META[type].ico}</span>`;
-  const voice = type === 'characters' ? (a.voice && a.voice.voiceId ? ' has-voice' : '') : '';
-  return `<span class="slot-chip${voice}" data-chip="${a.id}" data-type="${type}" title="${esc(a.desc || a.name)}">${img}<span class="chip-name">${esc(a.name)}</span><span class="chip-x" data-unbind="${a.id}" data-type="${type}">✕</span></span>`;
-}
-
+// ---------- 分镜渲染 ----------
 function renderShots() {
-  const body = $('#shotsBody');
-  const shots = state.project.shots;
-  $('#emptyTip').style.display = shots.length ? 'none' : 'block';
-
-  body.innerHTML = shots.map((shot, i) => {
-    const chars = shot.characters.map(id => getAsset('characters', id)).filter(Boolean);
-    const scene = getAsset('scenes', shot.scene);
-    const props = shot.props.map(id => getAsset('props', id)).filter(Boolean);
-    const others = shot.others.map(id => getAsset('others', id)).filter(Boolean);
-    const sfx = getAsset('sfx', shot.sfxId);
-
-    const charChips = chars.map(a => chipHTML('characters', a)).join('');
-    const sceneChip = scene ? chipHTML('scenes', scene) : '';
-    const propChips = props.map(a => chipHTML('props', a)).join('');
-    const otherChips = others.map(a => chipHTML('others', a)).join('');
-
-    // 辅助列
-    let voiceHTML;
-    if (shot.voicePath) {
-      voiceHTML = `<div class="aux-item">🎙<span class="aux-status ok">配音 ${shot.voiceDuration || '?'}s</span><span class="aux-play" data-action="play-voice" data-shot="${shot.id}" title="播放">▶</span><span class="aux-x" data-action="clear-voice" data-shot="${shot.id}" title="删除配音">✕</span></div>`;
-    } else {
-      voiceHTML = `<button class="op-icon voice-gen" data-action="gen-voice" data-shot="${shot.id}">🎙 生成配音</button>`;
-    }
-    let sfxHTML;
-    if (sfx) {
-      sfxHTML = `<div class="aux-item">🎵<span>${esc(sfx.name)}</span><span class="aux-play" data-action="play-sfx" data-sfx="${sfx.id}" title="播放">▶</span><span class="aux-x" data-action="unbind-sfx" data-shot="${shot.id}" title="解除绑定">✕</span></div>`;
-    } else {
-      sfxHTML = `<button class="aux-add" data-action="pick" data-type="sfx" data-shot="${shot.id}">＋ 绑定音效</button>`;
-    }
-
-    // 分镜图（含悬停操作按钮）
-    const storyHTML = shot.storyboardImg
-      ? `<img src="${esc(shot.storyboardImg)}" data-action="preview-story" data-shot="${shot.id}">`
-      : `<span>点击上传<br>或AI生成分镜图</span>`;
-    const storyBtns = `<div class="story-mini">
-        <button data-action="upload-story" data-shot="${shot.id}" title="上传本地图片">⬆</button>
-        <button data-action="ai-story" data-shot="${shot.id}" title="AI生成分镜图（综合人物/场景/道具/剧本）">✨</button>
-      </div>`;
-
-    // 视频槽
-    const videoHTML = shot.videoUrl
-      ? `<span class="video-slot done" data-action="preview-video" data-shot="${shot.id}" title="播放该分镜视频">▶</span>`
-      : `<span class="video-slot" title="生成视频后可用">—</span>`;
-
-    return `<tr data-shot="${shot.id}">
-      <td class="col-idx"><span class="shot-idx">${i + 1}</span></td>
-      <td class="col-script">
-        <textarea class="shot-script" data-shot="${shot.id}" placeholder="分镜剧本…">${esc(shot.text)}</textarea>
-        <div class="shot-dialogue" contenteditable="true" data-dialogue="${shot.id}" title="台词（用于配音，可编辑）">${esc(shot.dialogue || '（点击填写台词）')}</div>
-      </td>
-      <td class="col-char"><div class="slot-wrap" data-slot="characters" data-shot="${shot.id}">${charChips}<button class="slot-add" data-action="pick" data-type="characters" data-shot="${shot.id}" title="添加人物">＋</button></div></td>
-      <td class="col-scene"><div class="slot-wrap" data-slot="scenes" data-shot="${shot.id}">${sceneChip}<button class="slot-add" data-action="pick" data-type="scenes" data-shot="${shot.id}" title="设置场景">＋</button></div></td>
-      <td class="col-prop"><div class="slot-wrap" data-slot="props" data-shot="${shot.id}">${propChips}<button class="slot-add" data-action="pick" data-type="props" data-shot="${shot.id}" title="添加道具">＋</button></div></td>
-      <td class="col-other"><div class="slot-wrap" data-slot="others" data-shot="${shot.id}">${otherChips}<button class="slot-add" data-action="pick" data-type="others" data-shot="${shot.id}" title="添加其他">＋</button></div></td>
-      <td class="col-aux"><div class="aux-box">${voiceHTML}${sfxHTML}</div></td>
-      <td class="col-story"><div class="story-slot" data-action="story-click" data-shot="${shot.id}">${storyHTML}${storyBtns}</div></td>
-      <td class="col-video">${videoHTML}</td>
-      <td class="col-op"><div class="op-btns">
-        <button class="op-icon" data-action="up" data-shot="${shot.id}">↑ 上移</button>
-        <button class="op-icon" data-action="down" data-shot="${shot.id}">↓ 下移</button>
-        <button class="op-icon" data-action="del" data-shot="${shot.id}" style="color:#ff5c7a">✕ 删除</button>
-      </div></td>
-    </tr>`;
-  }).join('');
-}
-
-// ================= 渲染：资产面板 =================
-function renderAssets() {
-  const grid = $('#assetGrid');
-  const list = state.project.assets[state.activeTab] || [];
-  if (!list.length) {
-    grid.innerHTML = `<div class="picker-empty" style="grid-column:1/-1">暂无${TYPE_META[state.activeTab].label}资产<br><br>AI拆解剧本会自动创建，<br>或点击右上角「＋ 新建」</div>`;
+  const mode = videoMode();
+  $('#storyColTitle').textContent = '🎞 分镜' + (mode === 'firstlast' ? '（首尾帧模式）' : '');
+  const wrap = $('#shotsWrap');
+  if (!S.data.shots.length) {
+    wrap.innerHTML = '<div class="story-empty">暂无分镜<br><br>在左侧输入剧本后点击「✨ AI拆解」，<br>或点击右上角「＋ 添加分镜」</div>';
     return;
   }
-  grid.innerHTML = list.map(a => {
-    const used = countAssetUsed(state.activeTab, a.id);
-    const img = a.img
-      ? `<img src="${esc(a.img)}">`
-      : (a.audio ? `🎵` : TYPE_META[state.activeTab].ico);
-    let voiceLine = '';
-    if (state.activeTab === 'characters') {
-      const v = a.voice && a.voice.voiceId ? (state.voices.find(x => x.id === a.voice.voiceId) || {}).name || a.voice.voiceId : null;
-      voiceLine = `<div class="ac-voice ${v ? '' : 'none'}">${v ? '🎙 ' + esc(v) : '未绑定配音'}</div>`;
-    }
-    if (state.activeTab === 'sfx') {
-      voiceLine = `<div class="ac-voice ${a.audio ? '' : 'none'}">${a.audio ? '已上传音频' : '未上传音频'}</div>`;
-    }
-    return `<div class="asset-card" draggable="true" data-asset="${a.id}" data-type="${state.activeTab}" title="拖拽到分镜槽位绑定，点击编辑">
-      <div class="ac-img">${img}</div>
-      ${used ? `<span class="ac-used">出镜${used}次</span>` : ''}
-      <div class="ac-name">${esc(a.name)}</div>
-      <div class="ac-desc">${esc(a.desc || '暂无描述')}</div>
-      ${voiceLine}
+  const A = S.project.assets || { characters: [], scenes: [], props: [], others: [], sfx: [] };
+  wrap.innerHTML = S.data.shots.map((s, i) => {
+    const chars = A.characters.map(c => `<option value="${c.id}" ${(s.characterIds || []).includes(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const scenes = A.scenes.map(c => `<option value="${c.id}" ${s.sceneId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const props = A.props.map(c => `<option value="${c.id}" ${(s.propIds || []).includes(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const others = A.others.map(c => `<option value="${c.id}" ${(s.otherIds || []).includes(c.id) ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const sfx = A.sfx.map(c => `<option value="${c.id}" ${s.sfxId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const frameSlot = (label, field) => `
+      <div class="frame-slot" data-shot="${s.id}" data-field="${field}">
+        <div class="fs-label">${label}</div>
+        ${s[field] ? `<img src="${esc(S.api.abs(s[field]))}" data-act="preview">` : ''}
+        <div class="fs-btns">
+          <button class="btn small" data-act="upload">上传</button>
+          <button class="btn small" data-act="ai" ${!(S.project.models.image || []).length ? 'disabled' : ''}>AI生成</button>
+          ${s[field] ? '<button class="btn small danger" data-act="clear">删除</button>' : ''}
+        </div>
+      </div>`;
+    const framesHtml = mode === 'firstlast'
+      ? `<div class="frames-row">${frameSlot('首帧图', 'firstImg')}${frameSlot('尾帧图', 'lastImg')}</div>`
+      : `<div class="frames-row">${frameSlot('分镜图', 'storyboardImg')}</div>`;
+    return `
+    <div class="shot-card" data-id="${s.id}">
+      <div class="shot-head">
+        <span class="shot-no">镜 ${i + 1}</span>
+        <div class="shot-actions">
+          <button class="btn ghost small" data-act="gen-img" title="AI生成分镜图">🖼</button>
+          <button class="btn ghost small" data-act="gen-voice" title="AI配音">🎙</button>
+          <button class="btn ghost small" data-act="up" title="上移">↑</button>
+          <button class="btn ghost small" data-act="down" title="下移">↓</button>
+          <button class="btn ghost small danger" data-act="del" title="删除">✕</button>
+        </div>
+      </div>
+      <div class="shot-grid">
+        <div class="shot-field full"><label>画面描述</label><textarea data-f="text">${esc(s.text)}</textarea></div>
+        <div class="shot-field"><label>台词</label><textarea data-f="dialogue">${esc(s.dialogue)}</textarea></div>
+        <div class="shot-field"><label>说话人</label><input data-f="speaker" value="${esc(s.speaker)}"></div>
+        <div class="shot-field"><label>出场人物</label><select data-f="characterIds" multiple size="2">${chars}</select></div>
+        <div class="shot-field"><label>场景</label><select data-f="sceneId"><option value="">（无）</option>${scenes}</select></div>
+        <div class="shot-field"><label>道具</label><select data-f="propIds" multiple size="2">${props}</select></div>
+        <div class="shot-field"><label>其他参考</label><select data-f="otherIds" multiple size="2">${others}</select></div>
+        <div class="shot-field"><label>音效</label><select data-f="sfxId"><option value="">（无）</option>${sfx}</select></div>
+      </div>
+      ${framesHtml}
+      <div class="voice-row">
+        ${s.voiceUrl ? `<audio controls preload="none" src="${esc(S.api.abs(s.voiceUrl))}"></audio>` : '<span style="font-size:11px;color:var(--text3)">未配音</span>'}
+        <button class="btn small" data-act="gen-voice">🎙 配音</button>
+        <select data-f="voice" style="width:110px;font-size:11px">${VOICES.map(v => `<option value="${v[0]}" ${s.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select>
+      </div>
     </div>`;
   }).join('');
 }
 
-// ================= AI 剧本拆解（文本模型） =================
-function findOrCreateAsset(type, name) {
-  name = (name || '').trim();
-  if (!name) return null;
-  const list = state.project.assets[type];
-  let a = list.find(x => x.name === name);
-  if (!a) {
-    a = { id: uid(), name, desc: '', img: null };
-    if (type === 'characters') a.voice = null;
-    if (type === 'sfx') a.audio = null;
-    list.push(a);
-  }
-  return a;
-}
-
-function autoMatchShot(shot) {
-  const meta = shot.aiMeta;
-  if (!meta) return;
-  const uniq = (arr) => [...new Set(arr)];
-  shot.characters = uniq((meta.characters || []).map(n => { const a = findOrCreateAsset('characters', n); return a && a.id; }).filter(Boolean));
-  shot.scene = (findOrCreateAsset('scenes', meta.scene) || {}).id || null;
-  shot.props = uniq((meta.props || []).map(n => { const a = findOrCreateAsset('props', n); return a && a.id; }).filter(Boolean));
-  shot.others = uniq((meta.others || []).map(n => { const a = findOrCreateAsset('others', n); return a && a.id; }).filter(Boolean));
-}
-
-async function doParseScript() {
-  const script = $('#scriptInput').value.trim();
-  if (!script) { toast('请先粘贴剧本文本', 'err'); return; }
-  if (!state.config.text.baseUrl || !state.config.text.model) {
-    toast('请先在「模型配置」中配置文本模型', 'err');
-    openModal('modalScript'); closeModal('modalScript');
-    openModelModal();
-    return;
-  }
-  const btn = $('#btnDoParse');
-  btn.disabled = true; btn.textContent = 'AI拆解中…';
-  try {
-    const result = await window.mochi.aiParseScript(script, {
-      characters: state.project.assets.characters.map(a => ({ name: a.name })),
-      scenes: state.project.assets.scenes.map(a => ({ name: a.name })),
-      props: state.project.assets.props.map(a => ({ name: a.name }))
-    });
-    const aiShots = (result.shots || []).map(s => ({
-      id: uid(),
-      text: s.text || '',
-      dialogue: s.dialogue || '',
-      characters: [], scene: null, props: [], others: [],
-      sfxId: null, voicePath: null, voiceDuration: 0,
-      storyboardImg: null, videoUrl: null, duration: 3,
-      aiMeta: { characters: s.characters || [], scene: s.scene || '', props: s.props || [], others: s.others || [] }
-    }));
-    if (!aiShots.length) { toast('AI未拆解出分镜，请检查剧本内容', 'err'); return; }
-    aiShots.forEach(autoMatchShot);
-    state.project.script = script;
-    if ($('#chkReplace').checked) state.project.shots = aiShots;
-    else state.project.shots = state.project.shots.concat(aiShots);
-    scheduleSave();
-    renderAll();
-    closeModal('modalScript');
-    toast(`拆解完成：${aiShots.length} 个分镜，已自动识别人物/场景/道具并匹配资产`, 'ok', 4000);
-  } catch (e) {
-    toast('拆解失败：' + e.message, 'err', 5000);
-  } finally {
-    btn.disabled = false; btn.textContent = '开始拆解';
-  }
-}
-
-// ================= 配音 =================
-function shotVoiceConfig(shot) {
-  for (const id of shot.characters) {
-    const a = getAsset('characters', id);
-    if (a && a.voice && a.voice.voiceId) {
-      return { voiceId: a.voice.voiceId, rate: a.voice.rate || 0, pitch: a.voice.pitch || 0, from: a.name };
-    }
-  }
-  return { voiceId: DEFAULT_VOICE, rate: 0, pitch: 0, from: '旁白' };
-}
-
-function shotVoiceText(shot) {
-  const d = (shot.dialogue || '').trim();
-  if (d && d !== '（点击填写台词）') return d;
-  return (shot.text || '').trim();
-}
-
-async function generateVoice(shot) {
-  const text = shotVoiceText(shot);
-  if (!text) { toast('该分镜没有可配音的文本', 'err'); return; }
-  try {
-    const vc = shotVoiceConfig(shot);
-    const r = await window.mochi.ttsGenerate(text, vc.voiceId, vc.rate, vc.pitch);
-    shot.voicePath = r.url;
-    shot.voiceDuration = r.duration;
-    scheduleSave();
-    renderShots();
-  } catch (e) {
-    toast('配音失败：' + e.message, 'err', 4000);
-  }
-}
-
-async function batchVoice() {
-  const shots = state.project.shots;
-  if (!shots.length) { toast('没有分镜', 'err'); return; }
-  const btn = $('#btnBatchVoice');
-  btn.disabled = true;
-  try {
-    for (let i = 0; i < shots.length; i++) {
-      btn.textContent = `🎙 配音中 ${i + 1}/${shots.length}`;
-      const text = shotVoiceText(shots[i]);
-      if (!text) continue;
-      try {
-        const vc = shotVoiceConfig(shots[i]);
-        const r = await window.mochi.ttsGenerate(text, vc.voiceId, vc.rate, vc.pitch);
-        shots[i].voicePath = r.url;
-        shots[i].voiceDuration = r.duration;
-      } catch (e) { console.error(e); }
-      renderShots();
-    }
-    scheduleSave();
-    toast('批量配音完成', 'ok');
-  } finally {
-    btn.disabled = false; btn.textContent = '🎙 批量生成配音';
-  }
-}
-
-// ================= AI 生图（图片模型） =================
-function buildShotPrompt(shot) {
-  const parts = [];
-  const chars = shot.characters.map(id => getAsset('characters', id)).filter(Boolean);
-  const scene = getAsset('scenes', shot.scene);
-  const props = shot.props.map(id => getAsset('props', id)).filter(Boolean);
-  const others = shot.others.map(id => getAsset('others', id)).filter(Boolean);
-  if (chars.length) parts.push('登场人物：' + chars.map(c => c.name + (c.desc ? '（' + c.desc + '）' : '')).join('、'));
-  if (scene) parts.push('场景：' + scene.name + (scene.desc ? '（' + scene.desc + '）' : ''));
-  if (props.length) parts.push('道具：' + props.map(p => p.name).join('、'));
-  if (others.length) parts.push('氛围元素：' + others.map(o => o.name).join('、'));
-  parts.push('画面情节：' + (shot.text || ''));
-  return `高质量漫剧风格插画，${state.project.aspect === '16:9' ? '横屏' : '竖屏'}构图，色彩鲜明，电影感光影。` + parts.join('；');
-}
-
-function ensureImageModel() {
-  if (!state.config.image.baseUrl || !state.config.image.model) {
-    toast('请先在「模型配置」中配置图片模型', 'err', 3500);
-    return false;
-  }
-  return true;
-}
-
-async function aiGenerateStoryboard(shot) {
-  if (!ensureImageModel()) return;
-  toast('正在AI生成分镜图（综合人物/场景/道具/剧本）…', '', 8000);
-  try {
-    const url = await window.mochi.aiGenImage(buildShotPrompt(shot), state.project.aspect);
-    shot.storyboardImg = url;
-    scheduleSave();
-    renderShots();
-    toast('分镜图生成完成', 'ok');
-  } catch (e) {
-    toast('AI生图失败：' + e.message, 'err', 5000);
-  }
-}
-
-async function aiGenAssetImg() {
-  if (!ensureImageModel()) return;
-  const name = $('#assetName').value.trim();
-  const desc = $('#assetDesc').value.trim();
-  if (!name) { toast('请先填写资产名称', 'err'); return; }
-  const type = $('#assetType').value;
-  const btn = $('#btnAiGenAssetImg');
-  btn.disabled = true; btn.textContent = '生成中…';
-  try {
-    const prompt = `${TYPE_META[type].label}设定图：${name}${desc ? '，' + desc : ''}。高质量漫剧风格，细节丰富，主体居中，干净背景，${type === 'characters' ? '全身立绘' : type === 'scenes' ? '场景全景' : '物品特写'}`;
-    const url = await window.mochi.aiGenImage(prompt, '9:16');
-    $('#assetImgPreview').src = url;
-    $('#assetImgPreview').classList.remove('hidden');
-    $('#assetImgPlaceholder').textContent = '点击更换图片';
-    toast('资产图生成完成（保存资产后生效）', 'ok');
-  } catch (e) {
-    toast('AI生图失败：' + e.message, 'err', 5000);
-  } finally {
-    btn.disabled = false; btn.textContent = '✨ AI生成';
-  }
-}
-
-// ================= 文件上传 =================
-async function pickAndSaveImage() {
-  const p = await window.mochi.pickFile([{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]);
-  if (!p) return null;
-  const b64 = await window.mochi.readAsBase64(p);
-  return await window.mochi.saveAsset(p.split(/[\\/]/).pop(), b64);
-}
-async function pickAndSaveAudio() {
-  const p = await window.mochi.pickFile([{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac'] }]);
-  if (!p) return null;
-  const b64 = await window.mochi.readAsBase64(p);
-  return await window.mochi.saveAsset(p.split(/[\\/]/).pop(), b64);
-}
-
-// ================= 槽位选择器 =================
-function openPicker(type, shotId, x, y) {
-  state.picker = { type, shotId };
-  const pop = $('#pickerPop');
-  const shot = getShot(shotId);
-  const bound = type === 'characters' ? shot.characters
-    : type === 'scenes' ? (shot.scene ? [shot.scene] : [])
-      : type === 'props' ? shot.props
-        : type === 'others' ? shot.others
-          : (shot.sfxId ? [shot.sfxId] : []);
-  $('#pickerTitle').textContent = '选择' + TYPE_META[type].label;
-  const list = state.project.assets[type];
-  $('#pickerList').innerHTML = (list.length ? list.map(a => `
-    <div class="picker-item" data-pick-asset="${a.id}">
-      ${a.img ? `<img src="${esc(a.img)}">` : `<span class="p-ico">${a.audio ? '🎵' : TYPE_META[type].ico}</span>`}
-      <div><div>${esc(a.name)}</div><div class="p-sub">${esc(a.desc || '')}</div></div>
-      ${bound.includes(a.id) ? '<span class="p-check">✓</span>' : ''}
-    </div>`).join('') : `<div class="picker-empty">暂无${TYPE_META[type].label}资产</div>`)
-    + `<div class="picker-create" data-picker-create="1">＋ 新建${TYPE_META[type].label}</div>`;
-
-  pop.classList.remove('hidden');
-  const pw = 280, ph = Math.min(340, pop.offsetHeight || 300);
-  let px = Math.min(Math.max(8, x), window.innerWidth - pw - 8);
-  let py = y;
-  if (py + ph > window.innerHeight - 8) py = Math.max(8, window.innerHeight - ph - 8);
-  pop.style.left = px + 'px';
-  pop.style.top = py + 'px';
-}
-function closePicker() {
-  state.picker = null;
-  $('#pickerPop').classList.add('hidden');
-}
-
-function bindAsset(type, id, shotId) {
-  const shot = getShot(shotId);
-  if (!shot) return;
-  if (type === 'characters') { if (!shot.characters.includes(id)) shot.characters.push(id); }
-  else if (type === 'scenes') { shot.scene = id; }
-  else if (type === 'props') { if (!shot.props.includes(id)) shot.props.push(id); }
-  else if (type === 'others') { if (!shot.others.includes(id)) shot.others.push(id); }
-  else if (type === 'sfx') { shot.sfxId = id; }
-  scheduleSave();
-  renderShots();
-  renderAssets();
-  renderMeta();
-}
-function unbindAsset(type, id, shotId) {
-  const shot = getShot(shotId);
-  if (!shot) return;
-  if (type === 'characters') shot.characters = shot.characters.filter(x => x !== id);
-  else if (type === 'scenes') { if (shot.scene === id) shot.scene = null; }
-  else if (type === 'props') shot.props = shot.props.filter(x => x !== id);
-  else if (type === 'others') shot.others = shot.others.filter(x => x !== id);
-  else if (type === 'sfx') { if (shot.sfxId === id) shot.sfxId = null; }
-  scheduleSave();
-  renderShots();
-  renderAssets();
-}
-
-// ================= 资产编辑弹窗 =================
-function openAssetModal(type, asset) {
-  state.editingAsset = { type, asset: asset || null };
-  $('#assetModalTitle').textContent = (asset ? '编辑' : '新建') + TYPE_META[type].label;
-  $('#assetType').value = type;
-  $('#assetType').disabled = !!asset;
-  $('#assetName').value = asset ? asset.name : '';
-  $('#assetDesc').value = asset ? (asset.desc || '') : '';
-  $('#assetImgPreview').src = asset && asset.img ? asset.img : '';
-  $('#assetImgPreview').classList.toggle('hidden', !(asset && asset.img));
-  $('#assetImgPlaceholder').textContent = asset && asset.img ? '点击更换图片' : '点击上传图片';
-  $('#rowAssetAudio').classList.toggle('hidden', type !== 'sfx');
-  $('#assetAudioPreview').src = asset && asset.audio ? asset.audio : '';
-  $('#assetAudioPreview').classList.toggle('hidden', !(asset && asset.audio));
-  $('#assetAudioPlaceholder').textContent = asset && asset.audio ? '点击更换音频' : '点击上传音频(mp3/wav)';
-  const isChar = (type === 'characters');
-  $('#voiceBindSection').classList.toggle('hidden', !isChar);
-  if (isChar) {
-    const v = (asset && asset.voice) || { voiceId: DEFAULT_VOICE, rate: 0, pitch: 0 };
-    $('#voiceSelect').value = v.voiceId || DEFAULT_VOICE;
-    $('#voiceRate').value = v.rate || 0;
-    $('#voicePitch').value = v.pitch || 0;
-    $('#rateVal').textContent = (v.rate || 0) + '%';
-    $('#pitchVal').textContent = v.pitch || 0;
-  }
-  $('#btnDeleteAsset').style.visibility = asset ? 'visible' : 'hidden';
-  openModal('modalAsset');
-}
-
-async function saveAssetModal() {
-  const { type, asset } = state.editingAsset || {};
-  if (!type) return;
-  const name = $('#assetName').value.trim();
-  if (!name) { toast('请填写资产名称', 'err'); return; }
-  const img = $('#assetImgPreview').src || null;
-  const audio = $('#assetAudioPreview').src || null;
-  let target = asset;
-  if (!target) {
-    target = { id: uid(), name, desc: '', img: null };
-    if (type === 'characters') target.voice = null;
-    if (type === 'sfx') target.audio = null;
-    state.project.assets[type].push(target);
-  }
-  target.name = name;
-  target.desc = $('#assetDesc').value.trim();
-  if (img && String(img).startsWith('mochi-file:')) target.img = img;
-  if (type === 'sfx' && audio && String(audio).startsWith('mochi-file:')) target.audio = audio;
-  if (type === 'characters') {
-    target.voice = { voiceId: $('#voiceSelect').value, rate: parseInt($('#voiceRate').value) || 0, pitch: parseInt($('#voicePitch').value) || 0 };
-  }
-  scheduleSave();
-  renderAll();
-  closeModal('modalAsset');
-  toast(TYPE_META[type].label + '已保存', 'ok');
-}
-
-// ================= 模型配置 =================
-function openModelModal() {
-  const c = state.config;
-  $('#txtBaseUrl').value = c.text.baseUrl || '';
-  $('#txtApiKey').value = c.text.apiKey || '';
-  $('#txtModel').value = c.text.model || '';
-  $('#imgBaseUrl').value = c.image.baseUrl || '';
-  $('#imgApiKey').value = c.image.apiKey || '';
-  $('#imgModel').value = c.image.model || '';
-  $('#vidBaseUrl').value = c.video.baseUrl || '';
-  $('#vidApiKey').value = c.video.apiKey || '';
-  $('#vidModel').value = c.video.model || '';
-  $('#apiTestResult').textContent = '';
-  openModal('modalModel');
-}
-
-async function saveModelModal() {
-  const c = state.config;
-  c.text = { baseUrl: $('#txtBaseUrl').value.trim(), apiKey: $('#txtApiKey').value.trim(), model: $('#txtModel').value.trim() };
-  c.image = { baseUrl: $('#imgBaseUrl').value.trim(), apiKey: $('#imgApiKey').value.trim(), model: $('#imgModel').value.trim() };
-  c.video = { baseUrl: $('#vidBaseUrl').value.trim(), apiKey: $('#vidApiKey').value.trim(), model: $('#vidModel').value.trim() };
-  await window.mochi.saveConfig(c);
-  closeModal('modalModel');
-  toast('模型配置已保存', 'ok');
-}
-
-async function testTextModel() {
-  const r = $('#apiTestResult');
-  r.className = 'test-result'; r.textContent = '测试中…';
-  const tmp = {
-    baseUrl: $('#txtBaseUrl').value.trim(),
-    apiKey: $('#txtApiKey').value.trim(),
-    model: $('#txtModel').value.trim()
+// ---------- 分镜事件（委托） ----------
+function initShotEvents() {
+  const wrap = $('#shotsWrap');
+  const upd = (id, patch, rerender) => {
+    const s = shotById(id); if (!s) return;
+    Object.assign(s, patch);
+    emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
+    if (rerender) renderShots();
   };
-  if (!tmp.baseUrl || !tmp.model) {
-    r.className = 'test-result err'; r.textContent = '✗ 请先填写文本模型的地址和模型名';
-    return;
-  }
-  // 临时保存再测试（aiCall 使用已保存配置）
-  const old = JSON.parse(JSON.stringify(state.config));
-  state.config.text = tmp;
-  await window.mochi.saveConfig(state.config);
-  try {
-    const out = await window.mochi.aiCall([{ role: 'user', content: '回复"ok"两个字母即可' }], false);
-    r.className = 'test-result ok'; r.textContent = '✓ 连接成功：' + String(out).slice(0, 40);
-  } catch (e) {
-    r.className = 'test-result err'; r.textContent = '✗ ' + e.message.slice(0, 120);
-    state.config = old;
-    await window.mochi.saveConfig(old);
-  }
-}
-
-// ================= 视频合成 =================
-function composeReferenceSummary() {
-  const p = state.project;
-  const cfg = state.config;
-  const charIds = new Set(), sceneIds = new Set(), propIds = new Set(), otherIds = new Set();
-  let voiceCount = 0, sfxCount = 0, imgCount = 0;
-  p.shots.forEach(s => {
-    s.characters.forEach(id => charIds.add(id));
-    if (s.scene) sceneIds.add(s.scene);
-    s.props.forEach(id => propIds.add(id));
-    s.others.forEach(id => otherIds.add(id));
-    if (s.voicePath) voiceCount++;
-    if (s.sfxId) sfxCount++;
-    if (s.storyboardImg) imgCount++;
+  wrap.addEventListener('input', e => {
+    const card = e.target.closest('.shot-card'); if (!card) return;
+    const id = card.dataset.id, f = e.target.dataset.f;
+    if (!f) return;
+    if (['text', 'dialogue', 'speaker'].includes(f)) { upd(id, { [f]: e.target.value }); return; }
+    if (f === 'characterIds' || f === 'propIds' || f === 'otherIds') {
+      upd(id, { [f]: Array.from(e.target.selectedOptions).map(o => o.value) });
+    }
   });
-  const useVideoApi = !!(cfg.video.baseUrl && cfg.video.model);
-  return `共同参考：剧本 ${p.shots.length} 段 · 人物 ${charIds.size} · 场景 ${sceneIds.size} · 道具 ${propIds.size} · 其他 ${otherIds.size} · 配音 ${voiceCount} · 音效 ${sfxCount} · 分镜图 ${imgCount}
-生成方式：${useVideoApi ? '视频模型「' + cfg.video.model + '」逐镜生成画面 + 配音混音' : '本地方案（分镜图+配音+字幕，未配置视频模型）'}`;
+  wrap.addEventListener('change', e => {
+    const card = e.target.closest('.shot-card'); if (!card) return;
+    const id = card.dataset.id, f = e.target.dataset.f;
+    if (f === 'sceneId' || f === 'sfxId' || f === 'voice') upd(id, { [f]: e.target.value });
+  });
+  wrap.addEventListener('click', async e => {
+    const btn = e.target.closest('button'); if (!btn) return;
+    const card = btn.closest('.shot-card');
+    const slot = btn.closest('.frame-slot');
+    const act = btn.dataset.act;
+    if (slot && act) return handleFrameAction(slot, act);
+    if (!card) return;
+    const id = card.dataset.id;
+    const idx = S.data.shots.findIndex(s => s.id === id);
+    if (act === 'del') {
+      if (!confirm('删除该分镜？')) return;
+      S.data.shots.splice(idx, 1);
+      emitOp({ kind: 'shot-delete', episodeId: S.episode.id, shotId: id });
+      renderShots();
+    } else if (act === 'up' && idx > 0) {
+      const arr = S.data.shots; [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+      emitOp({ kind: 'shot-reorder', episodeId: S.episode.id, shotIds: arr.map(s => s.id) });
+      renderShots();
+    } else if (act === 'down' && idx < S.data.shots.length - 1) {
+      const arr = S.data.shots; [arr[idx + 1], arr[idx]] = [arr[idx], arr[idx + 1]];
+      emitOp({ kind: 'shot-reorder', episodeId: S.episode.id, shotIds: arr.map(s => s.id) });
+      renderShots();
+    } else if (act === 'gen-img') {
+      await genShotImage(id);
+    } else if (act === 'gen-voice') {
+      await genShotVoice(id);
+    }
+  });
 }
-
-async function doCompose() {
-  if (state.composing) return;
-  const p = state.project;
-  if (!p.shots.length) { toast('没有分镜', 'err'); return; }
-  state.composing = true;
-  renderMeta();
-  $('#composeBar').style.width = '0%';
-  $('#composeBar').querySelector('span').textContent = '0%';
-  $('#composeMsg').textContent = '准备中…';
-  $('#composeRef').textContent = composeReferenceSummary();
-  openModal('modalCompose');
-  try {
-    const result = await window.mochi.composeVideo(p);
-    (result.segments || []).forEach(seg => {
-      const shot = getShot(seg.shotId);
-      if (shot) shot.videoUrl = seg.url;
-    });
-    p.lastCompose = { path: result.path, name: result.name, duration: result.duration, at: Date.now() };
-    scheduleSave();
-    renderShots();
-    closeModal('modalCompose');
-    openPreview('成片预览', `
-      <video class="preview-video" src="mochi-file://exports/${encodeURIComponent(result.name)}" controls autoplay></video>
-      <p class="hint center" style="margin-top:12px">时长 ${result.duration}s · 已保存到本机</p>
-      <div style="display:flex;gap:10px;justify-content:center;margin-top:8px">
-        <button class="btn primary" id="btnOpenFolder">📂 打开文件夹</button>
-      </div>`);
-    $('#btnOpenFolder').addEventListener('click', () => window.mochi.showInFolder(result.path));
-    toast('视频生成完成！', 'ok', 4000);
-  } catch (e) {
-    closeModal('modalCompose');
-    toast('视频生成失败：' + e.message, 'err', 6000);
-  } finally {
-    state.composing = false;
-    renderMeta();
+async function handleFrameAction(slot, act) {
+  const id = slot.dataset.shot, field = slot.dataset.field;
+  const s = shotById(id); if (!s) return;
+  if (act === 'upload') {
+    try {
+      const url = await uploadPicked('image/*');
+      if (url) { updShot(id, { [field]: url }); renderShots(); }
+    } catch (e) { toast(e.message, 'err'); }
+  } else if (act === 'clear') {
+    updShot(id, { [field]: '' }); renderShots();
+  } else if (act === 'preview') {
+    openModal('预览', `<img src="${esc(S.api.abs(s[field]))}" style="width:100%">`, true);
+  } else if (act === 'ai') {
+    await genFrameImage(id, field);
   }
 }
+function updShot(id, patch) {
+  const s = shotById(id); if (!s) return;
+  Object.assign(s, patch);
+  emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
+}
+function addShot() {
+  const s = { id: uid(), text: '', dialogue: '', speaker: '', characterIds: [], sceneId: '', propIds: [], otherIds: [], sfxId: '', duration: 0, storyboardImg: '', firstImg: '', lastImg: '', voiceUrl: '', voice: 'zh-CN-XiaoxiaoNeural' };
+  S.data.shots.push(s);
+  emitOp({ kind: 'shot-add', episodeId: S.episode.id, shot: s });
+  renderShots();
+  const el = $(`.shot-card[data-id="${s.id}"]`);
+  if (el) { el.scrollIntoView({ behavior: 'smooth' }); el.querySelector('textarea').focus(); }
+}
 
-// ================= 自动更新 =================
+// ---------- 资产渲染 ----------
+function renderAssets() {
+  const kind = S.assetTab;
+  const list = assetsOf(kind);
+  const w = $('#assetsWrap');
+  if (!list.length) { w.innerHTML = `<div class="asset-empty">暂无${tabName(kind)}资产<br>点击右上角「＋ 新增资产」</div>`; return; }
+  w.innerHTML = list.map(a => `
+    <div class="asset-card" data-id="${a.id}">
+      ${a.img ? `<img class="as-img" src="${esc(S.api.abs(a.img))}" data-act="preview-img">` : ''}
+      ${a.audio ? `<audio class="as-audio" controls preload="none" src="${esc(S.api.abs(a.audio))}"></audio>` : ''}
+      <h4>${esc(a.name)} ${a.voice ? '<span class="as-voice-tag">' + esc((VOICES.find(v => v[0] === a.voice) || ['', a.voice])[1]) + '</span>' : ''}</h4>
+      ${a.desc ? `<div class="as-desc">${esc(a.desc)}</div>` : ''}
+      <div class="as-btns">
+        <button class="btn small" data-act="edit">编辑</button>
+        <button class="btn small danger" data-act="del">删除</button>
+      </div>
+    </div>`).join('');
+}
+function tabName(k) { return { characters: '人物', scenes: '场景', props: '道具', others: '其他', sfx: '音效' }[k] || k; }
+function initAssetEvents() {
+  $$('.asset-tab').forEach(t => t.onclick = () => {
+    $$('.asset-tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active'); S.assetTab = t.dataset.tab; renderAssets();
+  });
+  $('#assetsWrap').addEventListener('click', async e => {
+    const card = e.target.closest('.asset-card'); if (!card) return;
+    const id = card.dataset.id;
+    const list = assetsOf(S.assetTab);
+    const a = list.find(x => x.id === id); if (!a) return;
+    if (e.target.dataset.act === 'preview-img') {
+      openModal('预览 · ' + a.name, `<img src="${esc(S.api.abs(a.img))}" style="width:100%">`, true);
+    } else if (e.target.dataset.act === 'edit') {
+      openAssetModal(S.assetTab, a);
+    } else if (e.target.dataset.act === 'del') {
+      if (!confirm('删除资产「' + a.name + '」？')) return;
+      const arr = assetsOf(S.assetTab);
+      const i = arr.findIndex(x => x.id === id);
+      if (i >= 0) arr.splice(i, 1);
+      emitOp({ kind: 'assets-update', assets: S.project.assets });
+      renderAssets();
+    }
+  });
+}
+function openAssetModal(kind, asset) {
+  const isSfx = kind === 'sfx';
+  const isChar = kind === 'characters';
+  const a = asset || { id: uid(), name: '', desc: '', img: '', audio: '', voice: isChar ? 'zh-CN-XiaoxiaoNeural' : '' };
+  openModal((asset ? '编辑' : '新增') + tabName(kind) + '资产', `
+    <div class="form-row"><label>名称 *</label><input id="amName" value="${esc(a.name)}"></div>
+    <div class="form-row"><label>描述（供 AI 参考）</label><textarea id="amDesc" rows="3">${esc(a.desc)}</textarea></div>
+    ${!isSfx ? `<div class="form-row"><label>参考图</label>
+      <div class="img-row">
+        <img id="amImgPrev" src="${a.img ? esc(S.api.abs(a.img)) : ''}" style="width:86px;height:60px;object-fit:cover;border-radius:8px;background:var(--bg4)">
+        <button class="btn small" id="amImgUp">上传图片</button>
+        <button class="btn small" id="amImgAi" ${!(S.project.models.image || []).length ? 'disabled' : ''}>✨ AI生成</button>
+        ${a.img ? '<button class="btn small danger" id="amImgDel">删除</button>' : ''}
+      </div></div>` : ''}
+    ${isSfx ? `<div class="form-row"><label>音频文件</label>
+      <div class="img-row">${a.audio ? `<audio controls preload="none" src="${esc(S.api.abs(a.audio))}"></audio>` : '<span style="font-size:12px;color:var(--text3)">未上传</span>'}<button class="btn small" id="amAudUp">上传音频</button></div></div>` : ''}
+    ${isChar ? `<div class="form-row"><label>绑定配音音色（自动配音时使用）</label><select id="amVoice">${VOICES.map(v => `<option value="${v[0]}" ${a.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select></div>` : ''}
+    <div class="modal-foot-btns"><button class="btn ghost" id="amCancel">取消</button><button class="btn primary" id="amSave">保存</button></div>
+  `);
+  let img = a.img, audio = a.audio;
+  const up = $('#amImgUp'); if (up) up.onclick = async () => {
+    try { const u = await uploadPicked('image/*'); if (u) { img = u; $('#amImgPrev').src = S.api.abs(u); } } catch (e) { toast(e.message, 'err'); }
+  };
+  const ai = $('#amImgAi'); if (ai) ai.onclick = async () => {
+    const name = $('#amName').value.trim(), desc = $('#amDesc').value.trim();
+    if (!name) return toast('请先填写资产名称', 'err');
+    ai.disabled = true; ai.textContent = '生成中…';
+    try {
+      const prompt = buildAssetPrompt(kind, name, desc);
+      const r = await S.api.aiImage(S.project.id, S.sel.image, prompt, '9:16');
+      img = r.url; $('#amImgPrev').src = S.api.abs(r.url);
+      toast('生成成功', 'ok');
+    } catch (e) { toast(e.message, 'err', 4000); }
+    finally { ai.disabled = false; ai.textContent = '✨ AI生成'; }
+  };
+  const del = $('#amImgDel'); if (del) del.onclick = () => { img = ''; $('#amImgPrev').removeAttribute('src'); };
+  const au = $('#amAudUp'); if (au) au.onclick = async () => {
+    try { const u = await uploadPicked('audio/*'); if (u) { audio = u; toast('音频已上传', 'ok'); } } catch (e) { toast(e.message, 'err'); }
+  };
+  $('#amCancel').onclick = closeModal;
+  $('#amSave').onclick = () => {
+    const name = $('#amName').value.trim();
+    if (!name) return toast('请填写名称', 'err');
+    a.name = name; a.desc = $('#amDesc').value.trim(); a.img = img; a.audio = audio;
+    if (isChar) a.voice = $('#amVoice').value;
+    if (!asset) {
+      if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
+      if (!S.project.assets[kind]) S.project.assets[kind] = [];
+      S.project.assets[kind].push(a);
+    }
+    emitOp({ kind: 'assets-update', assets: S.project.assets });
+    closeModal(); renderAssets();
+  };
+}
+function buildAssetPrompt(kind, name, desc) {
+  const kindName = tabName(kind);
+  return `为漫剧生成${kindName}资产设定图：${name}。${desc || ''}。高质量插画风格，主体突出，细节丰富，适合作为动画制作参考图。`;
+}
+
+// ---------- AI 拆解剧本 ----------
+async function parseScript() {
+  const script = $('#scriptInput').value.trim();
+  if (!script) return toast('请先输入剧本内容', 'err');
+  if (!(S.project.models.text || []).length) return toast('该项目未配置文本模型，请联系管理员', 'err');
+  const btn = $('#btnParseScript');
+  btn.disabled = true; btn.textContent = '⏳ 拆解中…';
+  try {
+    const A = S.project.assets || {};
+    const assetList = {
+      characters: (A.characters || []).map(c => c.name),
+      scenes: (A.scenes || []).map(c => c.name),
+      props: (A.props || []).map(c => c.name),
+      others: (A.others || []).map(c => c.name),
+      sfx: (A.sfx || []).map(c => c.name)
+    };
+    const sys = `你是专业的漫剧分镜师。将剧本拆解为分镜列表。严格返回JSON：
+{"shots":[{"text":"画面描述","dialogue":"台词(无台词则为空串)","speaker":"说话人名(无则空)","characters":["出场人物名"],"scene":"场景名(无则空)","props":["道具名"],"other":["其他参考"],"sfx":"音效名(无则空)"}]}
+规则：1.按剧情节奏拆分(通常每镜2-4句旁白/对话) 2.人物/场景/道具尽量从已有资产列表匹配 3.台词=该镜所有对白原文 4.只返回JSON。`;
+    const usr = `已有资产：${JSON.stringify(assetList)}\n\n剧本：\n${script.slice(0, 8000)}`;
+    const r = await S.api.aiText(S.project.id, S.sel.text, [{ role: 'system', content: sys }, { role: 'user', content: usr }], true);
+    const j = extractJSON(r.content);
+    const shots = (j.shots || []).map(o => ({
+      id: uid(),
+      text: String(o.text || ''), dialogue: String(o.dialogue || ''), speaker: String(o.speaker || ''),
+      characterIds: matchAssets(A.characters, o.characters),
+      sceneId: matchAssets(A.scenes, o.scene ? [o.scene] : [])[0] || '',
+      propIds: matchAssets(A.props, o.props),
+      otherIds: matchAssets(A.others, o.other),
+      sfxId: matchAssets(A.sfx, o.sfx ? [o.sfx] : [])[0] || '',
+      duration: 0, storyboardImg: '', firstImg: '', lastImg: '',
+      voiceUrl: '', voice: 'zh-CN-XiaoxiaoNeural'
+    }));
+    if (!shots.length) throw new Error('AI 未拆解出分镜');
+    S.data.shots = shots;
+    S.data.script = script;
+    emitOp({ kind: 'shots-replace', episodeId: S.episode.id, shots, script });
+    renderShots();
+    toast('拆解完成：' + shots.length + ' 个分镜', 'ok');
+  } catch (e) {
+    toast('拆解失败：' + (e.message || e), 'err', 4500);
+  } finally { btn.disabled = false; btn.textContent = '✨ AI拆解'; }
+}
+function matchAssets(list, names) {
+  if (!list || !names) return [];
+  return list.filter(a => names.some(n => n && (a.name === n || a.name.includes(n) || String(n).includes(a.name)))).map(a => a.id);
+}
+
+// ---------- AI 生图（分镜图/首尾帧） ----------
+function buildShotPrompt(s) {
+  const A = S.project.assets || {};
+  const parts = [];
+  parts.push('漫剧画面：' + (s.text || ''));
+  const chars = (A.characters || []).filter(c => (s.characterIds || []).includes(c.id));
+  chars.forEach(c => parts.push('人物[' + c.name + ']：' + (c.desc || c.name)));
+  const sc = (A.scenes || []).find(c => c.id === s.sceneId);
+  if (sc) parts.push('场景[' + sc.name + ']：' + (sc.desc || sc.name));
+  (A.props || []).filter(c => (s.propIds || []).includes(c.id)).forEach(c => parts.push('道具[' + c.name + ']'));
+  (A.others || []).filter(c => (s.otherIds || []).includes(c.id)).forEach(c => parts.push('其他[' + c.name + ']：' + (c.desc || c.name)));
+  if (s.dialogue) parts.push('画面需契合台词情境：' + s.dialogue.slice(0, 50));
+  return parts.join('；') + '。高质量动漫风格，构图完整。';
+}
+async function genFrameImage(id, field) {
+  const s = shotById(id); if (!s) return;
+  if (!(S.project.models.image || []).length) return toast('该项目未配置图片模型，请联系管理员', 'err');
+  const slot = $(`.frame-slot[data-shot="${id}"][data-field="${field}"] .fs-btns [data-act="ai"]`);
+  if (slot) { slot.disabled = true; slot.textContent = '生成中…'; }
+  try {
+    const label = field === 'firstImg' ? '首帧' : field === 'lastImg' ? '尾帧' : '分镜';
+    let prompt = buildShotPrompt(s);
+    if (field === 'lastImg' && s.dialogue) prompt += ' 画面为该镜头结束时刻的状态。';
+    const r = await S.api.aiImage(S.project.id, S.sel.image, prompt, S.data.aspect);
+    updShot(id, { [field]: r.url });
+    renderShots();
+    toast(label + '图已生成', 'ok');
+  } catch (e) { toast(e.message, 'err', 4000); renderShots(); }
+}
+async function genShotImage(id) {
+  const mode = videoMode();
+  if (mode === 'firstlast') return toast('首尾帧模式请分别生成首帧/尾帧图', 'err');
+  await genFrameImage(id, 'storyboardImg');
+}
+
+// ---------- 配音 ----------
+async function genShotVoice(id) {
+  const s = shotById(id); if (!s) return;
+  const text = (s.dialogue || s.text || '').trim();
+  if (!text) return toast('该分镜没有台词/描述，无法配音', 'err');
+  // 优先使用人物绑定音色
+  let voice = s.voice || 'zh-CN-XiaoxiaoNeural';
+  const A = (S.project.assets || {}).characters || [];
+  const c = A.find(x => (s.characterIds || []).includes(x.id) && x.voice);
+  if (c) voice = c.voice;
+  try {
+    toast('配音生成中…');
+    const r = await window.mochi.ttsGenerate({ text, voice, rate: '+0%', pitch: '+0Hz' });
+    if (!r.dataBase64) throw new Error('TTS 返回为空');
+    const up = await S.api.upload('voice.mp3', r.dataBase64);
+    updShot(id, { voiceUrl: up.url, voice });
+    renderShots();
+    toast('配音完成（' + (r.duration || 0).toFixed(1) + 's）', 'ok');
+  } catch (e) { toast('配音失败：' + (e.message || e), 'err', 4000); }
+}
+
+// ---------- 合成视频（480P） ----------
+function initCompose() {
+  window.mochi.onComposeProgress(d => {
+    const bar = $('#cpBarInner'), txt = $('#cpText');
+    if (bar) bar.style.width = Math.round(((d.cur + 1) / Math.max(d.total, 1)) * 100) + '%';
+    if (txt) txt.textContent = d.text || '';
+  });
+}
+async function composeVideo() {
+  if (S.composing) return;
+  const shots = S.data.shots;
+  if (!shots.length) return toast('没有分镜可合成', 'err');
+  const mode = videoMode();
+  const useVideoModel = !!(S.sel.video && (S.project.models.video || []).length);
+  // 首尾帧模式校验
+  if (useVideoModel && mode === 'firstlast') {
+    const bad = shots.filter(s => !s.firstImg || !s.lastImg);
+    if (bad.length) {
+      const idxs = bad.map(s => shots.indexOf(s) + 1).join('、');
+      toast('请完善分镜首尾帧（第 ' + idxs + ' 镜缺少首帧或尾帧图）', 'err', 5000);
+      return;
+    }
+  }
+  // 本地方案需有分镜图
+  if (!useVideoModel) {
+    const bad = shots.filter(s => !(s.storyboardImg || s.firstImg || s.lastImg));
+    if (bad.length) {
+      const idxs = bad.map(s => shots.indexOf(s) + 1).join('、');
+      toast('第 ' + idxs + ' 镜缺少分镜图，请先生成或上传', 'err', 5000);
+      return;
+    }
+  }
+  S.composing = true;
+  openModal('生成视频（480P）', `
+    <div class="compose-progress">
+      <div class="progress-bar"><div id="cpBarInner" style="width:0%"></div></div>
+      <div class="cp-text" id="cpText">准备中…</div>
+      <p class="hint">视频模型：${useVideoModel ? esc(((S.project.models.video || []).find(m => m.id === S.sel.video) || {}).name || '') + '（' + (mode === 'firstlast' ? '首尾帧' : '全能参考') + '）' : '本地方案（分镜图+配音+字幕）'}</p>
+    </div>`);
+  try {
+    const A = S.project.assets || {};
+    const spec = {
+      name: S.project.name + '-' + S.episode.name,
+      aspect: S.data.aspect || '9:16',
+      projectId: S.project.id,
+      serverBase: S.base, token: S.token,
+      videoModelId: useVideoModel ? S.sel.video : null,
+      shots: shots.map(s => {
+        const chars = (A.characters || []).filter(c => (s.characterIds || []).includes(c.id));
+        const sc = (A.scenes || []).find(c => c.id === s.sceneId);
+        const props = (A.props || []).filter(c => (s.propIds || []).includes(c.id));
+        const oth = (A.others || []).filter(c => (s.otherIds || []).includes(c.id));
+        const sfx = (A.sfx || []).find(c => c.id === s.sfxId);
+        // 视频模型提示词：综合所有参考
+        const vp = [];
+        vp.push(s.text || '');
+        chars.forEach(c => vp.push('人物「' + c.name + '」' + (c.desc || '')));
+        if (sc) vp.push('场景「' + sc.name + '」' + (sc.desc || ''));
+        props.forEach(p => vp.push('道具「' + p.name + '」'));
+        oth.forEach(o => vp.push('元素「' + o.name + '」'));
+        if (s.dialogue) vp.push('剧情台词：' + s.dialogue);
+        return {
+          id: s.id, text: s.text, dialogue: s.dialogue, speaker: s.speaker,
+          voiceUrl: s.voiceUrl ? S.api.abs(s.voiceUrl) : null,
+          sfxUrl: sfx && sfx.audio ? S.api.abs(sfx.audio) : null,
+          storyboardImgUrl: s.storyboardImg ? S.api.abs(s.storyboardImg) : null,
+          firstImgUrl: s.firstImg ? S.api.abs(s.firstImg) : null,
+          lastImgUrl: s.lastImg ? S.api.abs(s.lastImg) : null,
+          videoPrompt: vp.join('；'), duration: s.duration || 0
+        };
+      })
+    };
+    const r = await window.mochi.composeVideo(spec);
+    if (!r.ok) throw new Error(r.error);
+    // 上传统计（按分镜记录）
+    try {
+      await S.api.stats({
+        projectId: S.project.id, episodeId: S.episode.id, kind: 'video',
+        resolution: '480P', durationSec: r.duration,
+        items: r.segments.map(g => ({ shotId: g.id, index: g.index, text: (shotById(g.id) || {}).text || '', duration: g.duration }))
+      });
+    } catch (e) { }
+    openModal('生成完成 🎉', `
+      <p class="hint">总时长 ${fmtDur(r.duration)} · 480P · ${shots.length} 个分镜</p>
+      <video class="preview-video" controls src="${esc(r.url)}"></video>
+      <div class="modal-foot-btns">
+        <button class="btn ghost" id="pvShow">打开所在文件夹</button>
+        <button class="btn primary" id="pvClose">完成</button>
+      </div>`);
+    $('#pvClose').onclick = closeModal;
+    $('#pvShow').onclick = () => window.mochi.showInFolder(r.path);
+    toast('视频已生成（480P）', 'ok', 4000);
+  } catch (e) {
+    openModal('生成失败', `<p class="hint" style="color:var(--err)">${esc(e.message || e)}</p><div class="modal-foot-btns"><button class="btn primary" onclick="document.querySelector('#modalClose').click()">关闭</button></div>`);
+  } finally { S.composing = false; }
+}
+
+// ================================================================
+// 实时保存 / 实时协作
+// ================================================================
+let opQueue = [], opTimer = null, backupTimer = null;
+function emitOp(op) {
+  opQueue.push(op);
+  setSaveState(false);
+  clearTimeout(opTimer);
+  opTimer = setTimeout(flushOps, 450);
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(localBackup, 1500);
+}
+function flushOps() {
+  const ops = opQueue.splice(0);
+  ops.forEach(op => S.collab.sendOp(op));
+  if (ops.length) setSaveState(true);
+  localBackup();
+}
+function localBackup() {
+  if (!S.episode || !S.data) return;
+  window.mochi.backupSave('episode-' + S.episode.id, S.data);
+}
+function setSaveState(saved) {
+  const el = $('#saveBadge');
+  if (!el) return;
+  el.textContent = saved ? '已实时保存' : '保存中…';
+  el.classList.toggle('saving', !saved);
+}
+async function fullSaveEpisode() {
+  if (!S.episode || !S.data || !S.api) return;
+  try { await S.api.saveEpisode(S.episode.id, { name: S.episode.name, aspect: S.data.aspect, script: S.data.script, shots: S.data.shots }); } catch (e) { }
+}
+function initCollab() {
+  S.collab.onOp = m => {
+    const { op, clientId } = m;
+    if (clientId === S.collab.clientId) return;
+    if (!op || !S.data) return;
+    let rerender = false, rerenderAssets = false;
+    if (op.kind === 'shot-add') {
+      if (!S.data.shots.some(s => s.id === op.shot.id)) { S.data.shots.push(op.shot); rerender = true; }
+    } else if (op.kind === 'shot-update') {
+      const i = S.data.shots.findIndex(s => s.id === op.shot.id);
+      if (i >= 0) { S.data.shots[i] = op.shot; rerender = true; }
+    } else if (op.kind === 'shot-delete') {
+      S.data.shots = S.data.shots.filter(s => s.id !== op.shotId); rerender = true;
+    } else if (op.kind === 'shots-replace') {
+      S.data.shots = op.shots; if (op.script !== undefined) { S.data.script = op.script; $('#scriptInput').value = op.script; }
+      rerender = true;
+    } else if (op.kind === 'shot-reorder') {
+      const map = new Map(S.data.shots.map(s => [s.id, s]));
+      S.data.shots = op.shotIds.map(id => map.get(id)).filter(Boolean); rerender = true;
+    } else if (op.kind === 'assets-update') {
+      S.project.assets = op.assets; rerenderAssets = true;
+    } else if (op.kind === 'episode-meta') {
+      if (op.aspect !== undefined) { S.data.aspect = op.aspect; $('#aspectSel').value = op.aspect; }
+      if (op.script !== undefined) { S.data.script = op.script; $('#scriptInput').value = op.script; }
+    }
+    // 焦点保护：正在输入的控件不重绘（避免打断打字）
+    const focusEl = document.activeElement;
+    const focusInShots = focusEl && focusEl.closest && focusEl.closest('#shotsWrap');
+    if (rerender) { if (!focusInShots) renderShots(); }
+    if (rerenderAssets) renderAssets();
+    if (m.from) toast(m.from.name + ' 更新了内容', '', 1600);
+  };
+  S.collab.onPresence = users => {
+    const el = $('#presenceBadge');
+    if (!el) return;
+    const mine = S.user ? S.user.id : '';
+    const others = users.filter(u => u.userId !== mine);
+    if (!others.length) { el.textContent = ''; el.style.display = 'none'; return; }
+    el.style.display = '';
+    el.textContent = '👥 ' + others.map(u => u.name).join('、') + (others.length > 1 ? ' 正在协作' : ' 正在编辑');
+  };
+  S.collab.onClose = () => {
+    if (S.page === 'editor') {
+      setSaveState(false);
+      clearTimeout(S.wsRetryTimer);
+      S.wsRetryTimer = setTimeout(() => {
+        if (S.page !== 'editor') return;
+        try { S.collab.connect(S.base, S.token); S.collab.join(S.project.id, S.episode.id); fullSaveEpisode(); } catch (e) { }
+      }, 3000);
+    }
+  };
+}
+
+// ================================================================
+// 管理端
+// ================================================================
+let adminTab = 'stats', adminCache = null;
+function enterAdmin() {
+  $('#adminName').textContent = '👤 ' + S.admin.name + '（' + S.admin.username + '）';
+  showPage('admin');
+  loadAdmin();
+}
+async function loadAdmin() {
+  try {
+    adminCache = await S.api.adminData();
+    renderAdmin();
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderAdmin() {
+  const b = $('#adminBody');
+  if (!adminCache) { b.innerHTML = '<p class="hint">加载中…</p>'; return; }
+  if (adminTab === 'stats') renderAdminStats(b);
+  else if (adminTab === 'users') renderAdminUsers(b);
+  else if (adminTab === 'projects') renderAdminProjects(b);
+  else if (adminTab === 'server') renderAdminServer(b);
+}
+// ---- 统计 ----
+function renderAdminStats(b) {
+  const st = adminCache.stats.filter(x => x.kind === 'video');
+  const groupIds = new Set(st.map(x => x.groupId));
+  const totalDur = st.reduce((s, x) => s + (x.durationSec || 0), 0);
+  const users = new Set(st.map(x => x.userId));
+  // 按用户
+  const byUser = {};
+  st.forEach(x => {
+    byUser[x.userName] = byUser[x.userName] || { count: 0, groups: new Set(), dur: 0 };
+    byUser[x.userName].count++; byUser[x.userName].groups.add(x.groupId); byUser[x.userName].dur += x.durationSec || 0;
+  });
+  // 按分镜（项目/集/镜号）
+  const byShot = {};
+  st.forEach(x => {
+    const k = x.projectId + '|' + x.episodeId + '|' + x.shotIndex;
+    byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution };
+    byShot[k].count++; byShot[k].last = Math.max(byShot[k].last, x.ts); byShot[k].dur += x.durationSec || 0;
+  });
+  const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last).slice(0, 300);
+  b.innerHTML = `
+    <div class="stat-cards">
+      <div class="stat-card"><div class="sc-label">生成视频总数</div><div class="sc-num acc">${groupIds.size}</div></div>
+      <div class="stat-card"><div class="sc-label">分镜生成次数</div><div class="sc-num">${st.length}</div></div>
+      <div class="stat-card"><div class="sc-label">视频总时长</div><div class="sc-num ok">${fmtDur(totalDur)}</div></div>
+      <div class="stat-card"><div class="sc-label">参与用户数</div><div class="sc-num warn">${users.size}</div></div>
+    </div>
+    <div class="admin-section"><h3>按用户统计</h3>
+      <table class="admin-table"><tr><th>用户</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th></tr>
+      ${Object.entries(byUser).map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td></tr>`).join('') || '<tr><td colspan="4">暂无数据</td></tr>'}
+      </table></div>
+    <div class="admin-section"><h3>按分镜统计（最近300条）</h3>
+      <table class="admin-table"><tr><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
+      ${shotRows.map(r => `<tr><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="8">暂无数据，用户生成视频后此处自动统计</td></tr>'}
+      </table></div>`;
+}
+// ---- 用户（校验码） ----
+function renderAdminUsers(b) {
+  const codes = adminCache.codes || [];
+  b.innerHTML = `
+    <div class="admin-toolbar">
+      <input id="cuName" placeholder="用户名称（如：张三）">
+      <input id="cuCode" placeholder="校验码（留空自动生成）" style="width:200px">
+      <button class="btn primary" id="btnAddCode">＋ 添加校验码</button>
+      <button class="btn ghost" id="btnRefreshAdmin">刷新</button>
+    </div>
+    <table class="admin-table"><tr><th>用户名称</th><th>校验码</th><th>创建时间</th><th>登录过</th><th>操作</th></tr>
+    ${codes.map(c => {
+    const used = (adminCache.users || []).some(u => u.codeId === c.id);
+    return `<tr><td>${esc(c.name)}</td><td class="code-mono">${esc(c.code)}</td><td>${fmtTime(c.createdAt)}</td><td>${used ? '✅' : '—'}</td>
+        <td><button class="btn small danger" data-del="${c.id}">删除</button></td></tr>`;
+  }).join('') || '<tr><td colspan="5">暂无校验码</td></tr>'}
+    </table>
+    <p class="hint">用户在客户端登录页输入校验码即可登录；删除后该校验码立即失效。</p>`;
+  $('#btnAddCode').onclick = async () => {
+    const name = $('#cuName').value.trim();
+    if (!name) return toast('请填写用户名称', 'err');
+    try {
+      const r = await S.api.adminCreateCode(name, $('#cuCode').value.trim());
+      toast('已创建校验码：' + r.code.code, 'ok', 5000);
+      loadAdmin();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  $('#btnRefreshAdmin').onclick = loadAdmin;
+  b.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('删除该校验码？该用户将无法再登录。')) return;
+    try { await S.api.adminDeleteCode(btn.dataset.del); toast('已删除', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
+  });
+}
+// ---- 项目管理 ----
+function renderAdminProjects(b) {
+  const ps = adminCache.projects || [];
+  b.innerHTML = `
+    <div class="admin-toolbar">
+      <input id="npName" placeholder="新项目名称">
+      <button class="btn primary" id="btnAddProj">＋ 创建项目</button>
+      <button class="btn ghost" id="btnRefreshAdmin2">刷新</button>
+    </div>
+    <table class="admin-table"><tr><th>项目</th><th>分集数</th><th>创建时间</th><th>模型配置</th><th>操作</th></tr>
+    ${ps.map(p => {
+    const epCount = (adminCache.episodes || []).filter(e2 => e2.projectId === p.id).length;
+    const cfgCount = ((p.models.text || []).length) + ((p.models.image || []).length) + ((p.models.video || []).length);
+    return `<tr><td>${esc(p.name)}</td><td>${epCount}</td><td>${fmtTime(p.createdAt)}</td>
+        <td>${cfgCount ? '已配置 ' + cfgCount + ' 个' : '<span style="color:var(--warn)">未配置</span>'}</td>
+        <td>
+          <button class="btn small" data-cfg="${p.id}">⚙ 模型配置</button>
+          <button class="btn small danger" data-delp="${p.id}">删除</button>
+        </td></tr>`;
+  }).join('') || '<tr><td colspan="5">暂无项目</td></tr>'}
+    </table>
+    <p class="hint">用户只能进入项目、创建分集；项目与各项目的模型配置（文本/图片/视频）由管理员在此管理。视频模型分「全能参考」与「首尾帧」两种类型。</p>`;
+  $('#btnAddProj').onclick = async () => {
+    const name = $('#npName').value.trim();
+    if (!name) return toast('请填写项目名称', 'err');
+    try { await S.api.adminCreateProject(name); toast('项目已创建', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
+  };
+  $('#btnRefreshAdmin2').onclick = loadAdmin;
+  b.querySelectorAll('[data-cfg]').forEach(btn => btn.onclick = () => openModelCfg(btn.dataset.cfg));
+  b.querySelectorAll('[data-delp]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('删除项目将同时删除其全部分集数据，确定？')) return;
+    try { await S.api.adminDeleteProject(btn.dataset.delp); toast('已删除', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
+  });
+}
+function openModelCfg(pid) {
+  const p = adminCache.projects.find(x => x.id === pid);
+  if (!p) return;
+  p.models = p.models || { text: [], image: [], video: [] };
+  ['text', 'image', 'video'].forEach(k => { if (!Array.isArray(p.models[k])) p.models[k] = []; });
+  const section = (kind, title, sub) => `
+    <div class="mcfg-section">
+      <div class="mcfg-title">${title} <span>${sub}</span></div>
+      <div id="mcfg-${kind}"></div>
+      <button class="btn small" data-add="${kind}" style="margin-bottom:10px">＋ 添加${title.replace(/^[📝🖼🎬]+\s*/, '')}</button>
+    </div>`;
+  openModal('⚙ 模型配置 · ' + p.name, `
+    <p class="hint">配置仅保存在服务端，API Key 不会下发给用户；用户只能看到模型名称并进行选择。视频模型可选「全能参考」（综合所有素材生成）或「首尾帧」（必须提供首帧/尾帧图）。</p>
+    ${section('text', '📝 文本模型', '负责剧本拆解、台词处理')}
+    ${section('image', '🖼 图片模型', '负责资产图与分镜图生成')}
+    ${section('video', '🎬 视频模型', '负责最终成片画面')}
+    <div class="modal-foot-btns"><button class="btn ghost" id="mcCancel">取消</button><button class="btn primary" id="mcSave">保存配置</button></div>
+  `, true);
+  const render = kind => {
+    const w = $('#mcfg-' + kind);
+    w.innerHTML = p.models[kind].map((m, i) => `
+      <div class="mcfg-item">
+        <div class="mi-head">
+          <input class="mi-name" data-k="${kind}" data-i="${i}" data-f="name" value="${esc(m.name)}" placeholder="显示名称（如：全能参考）">
+          ${kind === 'video' ? `<select data-k="${kind}" data-i="${i}" data-f="type" style="width:120px">
+            <option value="allref" ${m.type !== 'firstlast' ? 'selected' : ''}>全能参考</option>
+            <option value="firstlast" ${m.type === 'firstlast' ? 'selected' : ''}>首尾帧</option>
+          </select>` : ''}
+          <button class="btn small danger" data-rm="${kind}" data-i="${i}">✕</button>
+        </div>
+        <div class="form-row half"><label>API 地址 (Base URL)</label><input data-k="${kind}" data-i="${i}" data-f="baseUrl" value="${esc(m.baseUrl)}" placeholder="https://api.xxx.com/v1"></div>
+        <div class="form-row half"><label>API Key</label><input data-k="${kind}" data-i="${i}" data-f="apiKey" type="password" value="${esc(m.apiKey)}" placeholder="sk-…"></div>
+        <div class="form-row half"><label>模型名称</label><input data-k="${kind}" data-i="${i}" data-f="model" value="${esc(m.model)}" placeholder="model id"></div>
+      </div>`).join('') || '<p class="hint">暂未配置</p>';
+  };
+  ['text', 'image', 'video'].forEach(render);
+  $('#modalBody').querySelectorAll('[data-add]').forEach(btn => btn.onclick = () => {
+    p.models[btn.dataset.add].push({ id: uid(), name: '', baseUrl: '', apiKey: '', model: '', type: btn.dataset.add === 'video' ? 'allref' : '' });
+    render(btn.dataset.add);
+  });
+  $('#modalBody').querySelectorAll('[data-rm]').forEach(btn => btn.onclick = () => {
+    p.models[btn.dataset.rm].splice(parseInt(btn.dataset.i), 1);
+    render(btn.dataset.rm);
+  });
+  $('#modalBody').addEventListener('input', e => {
+    const t = e.target;
+    if (t.dataset.k !== undefined && t.dataset.f) p.models[t.dataset.k][parseInt(t.dataset.i)][t.dataset.f] = t.value;
+  });
+  $('#modalBody').addEventListener('change', e => {
+    const t = e.target;
+    if (t.dataset.k !== undefined && t.dataset.f) p.models[t.dataset.k][parseInt(t.dataset.i)][t.dataset.f] = t.value;
+  });
+  $('#mcCancel').onclick = () => { closeModal(); loadAdmin(); };
+  $('#mcSave').onclick = async () => {
+    try {
+      // 清理空名称项
+      ['text', 'image', 'video'].forEach(k => { p.models[k] = p.models[k].filter(m => m.name && m.baseUrl && m.model); });
+      await S.api.adminSaveModels(pid, p.models);
+      toast('模型配置已保存', 'ok');
+      closeModal(); loadAdmin();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+// ---- 服务管理 ----
+async function renderAdminServer(b) {
+  const st = await window.mochi.serverStatus();
+  const addr = (st.ips && st.ips.length ? st.ips : ['本机IP']).map(ip => 'http://' + ip + ':' + (st.port || 3210)).join(' 或 ');
+  b.innerHTML = `
+    <div class="admin-section"><h3>协作服务状态</h3>
+      <div class="stat-cards">
+        <div class="stat-card"><div class="sc-label">本机服务</div><div class="sc-num ${st.running ? 'ok' : ''}">${st.running ? '运行中' : '未启动'}</div></div>
+        <div class="stat-card"><div class="sc-label">端口</div><div class="sc-num">${st.port || 3210}</div></div>
+        <div class="stat-card"><div class="sc-label">当前服务器地址</div><div class="sc-num" style="font-size:15px">${esc(S.base)}</div></div>
+      </div>
+      <div class="admin-toolbar">
+        <input id="svPort" value="${st.port || 3210}" style="width:100px" placeholder="端口">
+        <button class="btn primary" id="btnSvStart">${st.running ? '重启服务' : '启动本机服务'}</button>
+        ${st.running ? '<button class="btn danger" id="btnSvStop">停止服务</button>' : ''}
+      </div>
+      ${st.running ? `<p class="hint">✅ 服务运行中。用户端登录页填入：<b>${esc(addr)}</b><br>数据目录：${esc(st.dataDir)}</p>` : '<p class="hint">启动后本机即成为协作服务器，其他设备通过局域网（或公网映射）地址连接。当前管理端连接的是 <b>' + esc(S.base) + '</b>。</p>'}
+      <p class="hint">⚠️ 跨设备访问需保证网络互通（同一局域网，或在路由器做端口映射 / 使用内网穿透）。Windows 防火墙首次会弹窗，请选择「允许」。</p>
+    </div>`;
+  $('#btnSvStart').onclick = async () => {
+    try {
+      const r = await window.mochi.serverStart(parseInt($('#svPort').value) || 3210);
+      if (r.ok) { toast('服务已启动（端口 ' + r.port + '）', 'ok'); renderAdminServer(b); }
+      else toast(r.error || '启动失败', 'err');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  const stop = $('#btnSvStop'); if (stop) stop.onclick = async () => { await window.mochi.serverStop(); toast('已停止'); renderAdminServer(b); };
+}
+
+// ================================================================
+// 自动更新
+// ================================================================
 function initUpdaterUI() {
   window.mochi.appInfo().then(info => {
-    $('#verBadge').textContent = 'v' + info.version + (info.isPackaged ? '' : ' (dev)');
+    const v = 'v' + info.version + (info.isPackaged ? '' : ' (dev)');
+    ['#verBadge', '#projVerBadge', '#adminVerBadge'].forEach(s => { const el = $(s); if (el) el.textContent = v; });
   });
-
-  window.mochi.onUpdaterEvent('available', (d) => {
-    toast('发现新版本 v' + d.version + '，正在后台下载…', '', 4000);
-  });
-  window.mochi.onUpdaterEvent('not-available', () => {
-    toast('已是最新版本', 'ok');
-  });
-  window.mochi.onUpdaterEvent('progress', (d) => {
-    $('#updateBtnText').textContent = '下载中 ' + d.percent + '%';
-  });
-  window.mochi.onUpdaterEvent('downloaded', (d) => {
-    state.updateState = d;
-    $('#updateBarText').textContent = `新版本 v${d.version} 已下载完成`;
+  window.mochi.onUpdaterEvent('available', d => toast('发现新版本 v' + d.version + '，正在后台下载…', '', 4000));
+  window.mochi.onUpdaterEvent('downloaded', d => {
+    S.updateReady = d;
+    $('#updateBarText').textContent = '新版本 v' + (d.version || '') + ' 已下载完成';
     $('#updateBar').classList.remove('hidden');
-    $('#updateBtnText').textContent = '重启安装';
   });
-  window.mochi.onUpdaterEvent('error', (d) => {
-    $('#updateBtnText').textContent = '检查更新';
-  });
-
-  $('#btnCheckUpdate').addEventListener('click', async () => {
-    if (state.updateState) {
-      window.mochi.installUpdate();
-      return;
-    }
-    $('#updateBtnText').textContent = '检查中…';
+  window.mochi.onUpdaterEvent('error', () => { });
+  $('#btnCheckUpdate').onclick = async () => {
+    const fab = $('#btnCheckUpdate');
+    fab.textContent = '⏳';
     const r = await window.mochi.checkUpdate();
-    if (!r.ok) {
-      $('#updateBtnText').textContent = '检查更新';
-      toast(r.message || '检查更新失败（仅安装版支持自动更新）', 'err', 3500);
-    }
-  });
-  $('#btnInstallUpdate').addEventListener('click', () => window.mochi.installUpdate());
-  $('#btnDismissUpdate').addEventListener('click', () => $('#updateBar').classList.add('hidden'));
+    fab.textContent = '🔄';
+    if (r.dev) return toast('开发模式不支持检查更新', '', 3000);
+    if (!r.ok) return toast(r.message || '检查更新失败', 'err');
+    if (!r.hasUpdate) toast('已是最新版本', 'ok');
+    else toast('发现新版本 v' + r.version + '，正在下载…', '', 3500);
+  };
+  $('#btnInstallUpdate').onclick = async () => {
+    // 更新前自动保存全部内容
+    flushOps();
+    await fullSaveEpisode();
+    localBackup();
+    toast('内容已保存，正在重启安装…', '', 2500);
+    setTimeout(() => window.mochi.installUpdate(), 600);
+  };
+  $('#btnDismissUpdate').onclick = () => $('#updateBar').classList.add('hidden');
 }
 
-// ================= 弹窗控制 =================
-function openModal(id) { $('#' + id).classList.remove('hidden'); }
-function closeModal(id) { $('#' + id).classList.add('hidden'); }
-$$('.modal-mask').forEach(m => {
-  m.addEventListener('click', (e) => {
-    if (e.target === m || e.target.closest('[data-close]')) m.classList.add('hidden');
-  });
-});
-
-function openPreview(title, html) {
-  $('#previewTitle').textContent = title;
-  $('#previewBody').innerHTML = html;
-  openModal('modalPreview');
-}
-
-// ================= 事件绑定 =================
-function bindEvents() {
-  $('#projectName').addEventListener('input', (e) => { state.project.name = e.target.value; scheduleSave(); });
-  $$('#aspectSwitch button').forEach(b => b.addEventListener('click', () => {
-    $$('#aspectSwitch button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    state.project.aspect = b.dataset.v;
-    scheduleSave();
-  }));
-
-  // 工具栏
-  $('#btnParseScript').addEventListener('click', () => {
-    $('#scriptInput').value = state.project.script || '';
-    openModal('modalScript');
-  });
-  $('#btnDoParse').addEventListener('click', doParseScript);
-  $('#btnAddShot').addEventListener('click', () => {
-    state.project.shots.push({
-      id: uid(), text: '', dialogue: '', characters: [], scene: null, props: [], others: [],
-      sfxId: null, voicePath: null, voiceDuration: 0, storyboardImg: null, videoUrl: null, duration: 3
-    });
-    scheduleSave(); renderAll();
-    $('#shotsTableWrap').scrollTop = 1e9;
-  });
-  $('#btnAutoMatch').addEventListener('click', () => {
-    let n = 0;
-    state.project.shots.forEach(s => { if (s.aiMeta) { autoMatchShot(s); n++; } });
-    scheduleSave(); renderAll();
-    toast(n ? `已对 ${n} 个AI拆解的分镜重新匹配资产` : '没有带AI识别信息的分镜（仅AI拆解的剧本可自动匹配）', n ? 'ok' : 'err');
-  });
-  $('#btnBatchVoice').addEventListener('click', batchVoice);
-  $('#btnSaveProject').addEventListener('click', async () => {
-    await window.mochi.saveProject(state.project);
-    toast('项目已保存到本地', 'ok');
-  });
-
-  // 模型配置
-  $('#btnModelCfg').addEventListener('click', openModelModal);
-  $('#btnTestApi').addEventListener('click', testTextModel);
-  $('#btnSaveCfg').addEventListener('click', saveModelModal);
-
-  // 生成视频
-  $('#btnCompose').addEventListener('click', doCompose);
-  window.mochi.onVideoProgress((d) => {
-    $('#composeBar').style.width = d.pct + '%';
-    $('#composeBar').querySelector('span').textContent = d.pct + '%';
-    $('#composeMsg').textContent = d.msg;
-  });
-
-  // 分镜表格事件委托
-  $('#shotsBody').addEventListener('click', (e) => {
-    // 解绑 chip 优先
-    const un = e.target.closest('[data-unbind]');
-    if (un) {
-      e.stopPropagation();
-      unbindAsset(un.dataset.type, un.dataset.unbind, un.closest('tr').dataset.shot);
-      return;
-    }
-    const el = e.target.closest('[data-action]');
-    if (!el) return;
-    const action = el.dataset.action;
-    const shotId = el.dataset.shot;
-    const shot = shotId ? getShot(shotId) : null;
-    switch (action) {
-      case 'pick': {
-        e.stopPropagation();
-        const rect = el.getBoundingClientRect();
-        openPicker(el.dataset.type, shotId, rect.left, rect.bottom + 4);
-        break;
-      }
-      case 'gen-voice': if (shot) generateVoice(shot); break;
-      case 'play-voice': {
-        e.stopPropagation();
-        if (shot) new Audio(shot.voicePath).play();
-        break;
-      }
-      case 'clear-voice': if (shot) { shot.voicePath = null; shot.voiceDuration = 0; scheduleSave(); renderShots(); } break;
-      case 'play-sfx': {
-        const a = getAsset('sfx', el.dataset.sfx);
-        if (a && a.audio) new Audio(a.audio).play();
-        break;
-      }
-      case 'unbind-sfx': if (shot) { shot.sfxId = null; scheduleSave(); renderShots(); renderAssets(); } break;
-      case 'story-click': {
-        if (!shot) break;
-        if (shot.storyboardImg) openPreview('分镜图', `<img src="${esc(shot.storyboardImg)}" style="max-width:100%;max-height:62vh;border-radius:10px">`);
-        else pickAndSaveImage().then(url => { if (url) { shot.storyboardImg = url; scheduleSave(); renderShots(); } });
-        break;
-      }
-      case 'upload-story': {
-        e.stopPropagation();
-        if (shot) pickAndSaveImage().then(url => { if (url) { shot.storyboardImg = url; scheduleSave(); renderShots(); } });
-        break;
-      }
-      case 'ai-story': { e.stopPropagation(); if (shot) aiGenerateStoryboard(shot); break; }
-      case 'preview-video': {
-        if (shot && shot.videoUrl) openPreview('分镜 ' + (state.project.shots.indexOf(shot) + 1) + ' 视频', `<video class="preview-video" src="${esc(shot.videoUrl)}" controls autoplay></video>`);
-        break;
-      }
-      case 'up': {
-        if (!shot) break;
-        const i = state.project.shots.indexOf(shot);
-        if (i > 0) { state.project.shots.splice(i - 1, 0, state.project.shots.splice(i, 1)[0]); scheduleSave(); renderShots(); }
-        break;
-      }
-      case 'down': {
-        if (!shot) break;
-        const i = state.project.shots.indexOf(shot);
-        if (i < state.project.shots.length - 1) { state.project.shots.splice(i + 1, 0, state.project.shots.splice(i, 1)[0]); scheduleSave(); renderShots(); }
-        break;
-      }
-      case 'del': {
-        if (!shot) break;
-        if (confirm('确定删除该分镜？')) {
-          state.project.shots = state.project.shots.filter(s => s.id !== shotId);
-          scheduleSave(); renderAll();
-        }
-        break;
-      }
-    }
-  });
-
-  // 剧本文本 / 台词编辑
-  $('#shotsBody').addEventListener('input', (e) => {
-    const ta = e.target.closest('.shot-script');
-    if (ta) {
-      const shot = getShot(ta.dataset.shot);
-      if (shot) { shot.text = ta.value; scheduleSave(); }
-    }
-    const dlg = e.target.closest('[data-dialogue]');
-    if (dlg) {
-      const shot = getShot(dlg.dataset.dialogue);
-      if (shot) { shot.dialogue = dlg.textContent.trim(); scheduleSave(); }
-    }
-  });
-
-  // 资产面板
-  $$('#assetTabs button').forEach(b => b.addEventListener('click', () => {
-    $$('#assetTabs button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    state.activeTab = b.dataset.tab;
-    renderAssets();
-  }));
-  $('#btnNewAsset').addEventListener('click', () => openAssetModal(state.activeTab, null));
-  $('#assetGrid').addEventListener('click', (e) => {
-    const card = e.target.closest('.asset-card');
-    if (!card) return;
-    const asset = getAsset(card.dataset.type, card.dataset.asset);
-    if (asset) openAssetModal(card.dataset.type, asset);
-  });
-
-  // 资产编辑弹窗
-  $('#assetImgUploader').addEventListener('click', async (e) => {
-    if (e.target.closest('#btnAiGenAssetImg')) return;
-    const url = await pickAndSaveImage();
-    if (url) {
-      $('#assetImgPreview').src = url;
-      $('#assetImgPreview').classList.remove('hidden');
-      $('#assetImgPlaceholder').textContent = '点击更换图片';
-    }
-  });
-  $('#btnAiGenAssetImg').addEventListener('click', (e) => { e.stopPropagation(); aiGenAssetImg(); });
-  $('#assetAudioUploader').addEventListener('click', async () => {
-    const url = await pickAndSaveAudio();
-    if (url) {
-      $('#assetAudioPreview').src = url;
-      $('#assetAudioPreview').classList.remove('hidden');
-      $('#assetAudioPlaceholder').textContent = '点击更换音频';
-    }
-  });
-  $('#btnSaveAsset').addEventListener('click', saveAssetModal);
-  $('#btnDeleteAsset').addEventListener('click', () => {
-    const { type, asset } = state.editingAsset || {};
-    if (!asset) return;
-    if (!confirm(`确定删除「${asset.name}」？已绑定的分镜槽位将一并解除。`)) return;
-    state.project.assets[type] = state.project.assets[type].filter(a => a.id !== asset.id);
-    state.project.shots.forEach(s => {
-      if (type === 'characters') s.characters = s.characters.filter(x => x !== asset.id);
-      if (type === 'scenes' && s.scene === asset.id) s.scene = null;
-      if (type === 'props') s.props = s.props.filter(x => x !== asset.id);
-      if (type === 'others') s.others = s.others.filter(x => x !== asset.id);
-      if (type === 'sfx' && s.sfxId === asset.id) s.sfxId = null;
-    });
-    scheduleSave(); renderAll(); closeModal('modalAsset');
-    toast('资产已删除', 'ok');
-  });
-  $('#voiceRate').addEventListener('input', (e) => $('#rateVal').textContent = e.target.value + '%');
-  $('#voicePitch').addEventListener('input', (e) => $('#pitchVal').textContent = e.target.value);
-  $('#btnTryVoice').addEventListener('click', async () => {
-    const text = $('#tryText').value.trim() || '你好';
-    const btn = $('#btnTryVoice');
-    btn.disabled = true; btn.textContent = '生成中…';
-    try {
-      const r = await window.mochi.ttsGenerate(text, $('#voiceSelect').value, parseInt($('#voiceRate').value) || 0, parseInt($('#voicePitch').value) || 0);
-      new Audio(r.url).play();
-    } catch (e) {
-      toast('试听失败：' + e.message, 'err');
-    } finally {
-      btn.disabled = false; btn.textContent = '试听';
-    }
-  });
-
-  // 选择器浮层
-  $('#pickerClose').addEventListener('click', closePicker);
-  $('#pickerPop').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const item = e.target.closest('[data-pick-asset]');
-    if (item && state.picker) {
-      bindAsset(state.picker.type, item.dataset.pickAsset, state.picker.shotId);
-      if (state.picker.type === 'scenes' || state.picker.type === 'sfx') closePicker();
-      else openPicker(state.picker.type, state.picker.shotId, parseInt($('#pickerPop').style.left), parseInt($('#pickerPop').style.top));
-      return;
-    }
-    if (e.target.closest('[data-picker-create]') && state.picker) {
-      const t = state.picker.type, sid = state.picker.shotId;
-      closePicker();
-      openAssetModal(t, null);
-      // 新建保存后自动绑定最新资产
-      const checkNew = setInterval(() => {
-        if ($('#modalAsset').classList.contains('hidden')) {
-          clearInterval(checkNew);
-          const latest = state.project.assets[t][state.project.assets[t].length - 1];
-          if (latest && !state._pickedNew) {
-            state._pickedNew = true;
-            bindAsset(t, latest.id, sid);
-            setTimeout(() => state._pickedNew = false, 500);
-          }
-        }
-      }, 300);
-    }
-  });
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('#pickerPop') && !e.target.closest('[data-action="pick"]')) closePicker();
-  });
-
-  // 拖拽绑定
-  $('#assetGrid').addEventListener('dragstart', (e) => {
-    const card = e.target.closest('.asset-card');
-    if (!card) return;
-    e.dataTransfer.setData('application/x-asset', JSON.stringify({ type: card.dataset.type, id: card.dataset.asset }));
-    e.dataTransfer.effectAllowed = 'copy';
-  });
-  $('#shotsBody').addEventListener('dragover', (e) => {
-    const slot = e.target.closest('.slot-wrap');
-    if (slot) { e.preventDefault(); slot.classList.add('drag-over'); }
-  });
-  $('#shotsBody').addEventListener('dragleave', (e) => {
-    const slot = e.target.closest('.slot-wrap');
-    if (slot) slot.classList.remove('drag-over');
-  });
-  $('#shotsBody').addEventListener('drop', (e) => {
-    const slot = e.target.closest('.slot-wrap');
-    if (!slot) return;
-    e.preventDefault();
-    slot.classList.remove('drag-over');
-    let data;
-    try { data = JSON.parse(e.dataTransfer.getData('application/x-asset')); } catch (err) { return; }
-    const slotType = slot.dataset.slot;
-    const shotId = slot.dataset.shot;
-    if (data.type === slotType) {
-      bindAsset(data.type, data.id, shotId);
-      toast(`已绑定「${getAsset(data.type, data.id).name}」`, 'ok', 1500);
-    } else {
-      toast(`类型不匹配：该槽位只接受${TYPE_META[slotType].label}`, 'err');
-    }
-  });
-
-  window.addEventListener('beforeunload', () => {
-    window.mochi.saveProject(state.project);
-  });
-}
-
-// ================= 启动 =================
-async function init() {
-  state.config = await window.mochi.loadConfig();
-  state.project = (await window.mochi.loadProject()) || defaultProject();
-  state.voices = await window.mochi.ttsVoices();
-  $('#voiceSelect').innerHTML = state.voices.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
-  $('#projectName').value = state.project.name || '未命名漫剧';
-  $$('#aspectSwitch button').forEach(b => b.classList.toggle('active', b.dataset.v === state.project.aspect));
-
-  // 数据迁移（补全缺失字段）
-  const p = state.project;
-  p.assets = p.assets || { characters: [], scenes: [], props: [], others: [], sfx: [] };
-  ['characters', 'scenes', 'props', 'others', 'sfx'].forEach(k => { if (!p.assets[k]) p.assets[k] = []; });
-  p.shots = (p.shots || []).map(s => Object.assign({
-    id: uid(), text: '', dialogue: '', characters: [], scene: null, props: [], others: [],
-    sfxId: null, voicePath: null, voiceDuration: 0, storyboardImg: null, videoUrl: null, duration: 3
-  }, s));
-
-  // 确保所有弹窗初始隐藏（防止叠加）
-  $$('.modal-mask').forEach(m => m.classList.add('hidden'));
-
-  bindEvents();
+// ================================================================
+// 初始化
+// ================================================================
+function init() {
+  initLogin();
   initUpdaterUI();
-  renderAll();
+  initShotEvents();
+  initAssetEvents();
+  initCompose();
+  // 页面导航
+  $('#btnLogout1').onclick = $('#btnLogout2').onclick = () => location.reload();
+  $('#btnBackProj').onclick = () => loadProjects();
+  $('#btnNewEpisode').onclick = newEpisode;
+  $('#btnBackEps').onclick = async () => {
+    flushOps(); await fullSaveEpisode();
+    S.collab.leave();
+    openProject(S.project.id);
+  };
+  // 编辑器
+  $('#btnParseScript').onclick = parseScript;
+  $('#btnAddShot').onclick = addShot;
+  $('#btnAddAsset').onclick = () => openAssetModal(S.assetTab, null);
+  $('#btnCompose').onclick = composeVideo;
+  let scriptTimer = null;
+  $('#scriptInput').addEventListener('input', e => {
+    S.data.script = e.target.value;
+    clearTimeout(scriptTimer);
+    scriptTimer = setTimeout(() => emitOp({ kind: 'episode-meta', episodeId: S.episode.id, script: e.target.value }), 800);
+  });
+  $('#aspectSel').onchange = e => {
+    S.data.aspect = e.target.value;
+    emitOp({ kind: 'episode-meta', episodeId: S.episode.id, aspect: e.target.value });
+  };
+  // 管理端页签
+  $$('.admin-tab').forEach(t => t.onclick = () => {
+    $$('.admin-tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active'); adminTab = t.dataset.tab; renderAdmin();
+  });
+  // 关闭前保存
+  window.addEventListener('beforeunload', () => { flushOps(); });
+  // 每30秒兜底全量保存
+  setInterval(() => { if (S.page === 'editor') fullSaveEpisode(); }, 30000);
 }
-
 init();
