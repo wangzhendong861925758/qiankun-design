@@ -1,0 +1,68 @@
+{
+  "name": "qiankun-design",
+  "version": "1.0.0",
+  "description": "乾坤设计 - AI漫剧编辑器（桌面版）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis",
+    "dist:publish": "electron-builder --win nsis --publish always"
+  },
+  "keywords": [],
+  "author": "qiankun",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "electron-updater": "^6.8.9",
+    "msedge-tts": "^2.0.7"
+  },
+  "build": {
+    "appId": "com.qiankun.design",
+    "productName": "乾坤设计",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@ffmpeg-installer/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "乾坤设计",
+      "artifactName": "QianKun-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wangzhendong861925758",
+        "repo": "qiankun-design"
+      }
+    ]
+  }
+}
