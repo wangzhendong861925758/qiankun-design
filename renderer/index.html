@@ -66,7 +66,39 @@
   </div>
 </div>
 
-<!-- ============ 编辑器页 ============ -->
+<!-- ============ 剧本分解页（进入分集后第一步） ============ -->
+<div class="page hidden" id="page-setup">
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="btn ghost small" id="btnSetupBack">← 分集</button>
+      <div class="logo small">🧩 <span id="setupEpName"></span></div>
+    </div>
+    <div class="topbar-right"><span class="ver-badge" id="setupExistBadge"></span></div>
+  </header>
+  <div class="setup-body">
+    <div class="setup-card">
+      <h2>剧本分解</h2>
+      <p class="setup-desc">输入本集剧本并选择画风与画幅，AI 将自动拆解为分镜；也可以跳过拆解直接进入操作界面手动创作。</p>
+
+      <div class="setup-step"><span class="step-no">1</span>剧本内容</div>
+      <textarea id="setupScript" class="setup-script" placeholder="在此输入或粘贴本集剧本文本……&#10;&#10;例如：&#10;夜色如墨，少年林凡独自走进幽暗森林。&#10;「不管前面是什么，我都要找到那把剑。」他握紧拳头……"></textarea>
+
+      <div class="setup-step"><span class="step-no">2</span>画面风格</div>
+      <div class="style-chips" id="styleChips"></div>
+
+      <div class="setup-step"><span class="step-no">3</span>屏幕比例</div>
+      <div class="aspect-opts" id="aspectOpts"></div>
+
+      <div class="setup-actions">
+        <button class="btn ghost" id="btnSkipParse">⏭ 跳过剧本拆解，直接进入</button>
+        <button class="btn primary" id="btnStartParse">✨ 开始解析</button>
+      </div>
+      <p class="setup-hint" id="setupHint"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 编辑器页（九列操作界面） ============ -->
 <div class="page hidden" id="page-editor">
   <header class="topbar">
     <div class="topbar-left">
@@ -80,36 +112,37 @@
       <select class="model-sel" id="selImageModel" title="图片模型"></select>
       <select class="model-sel" id="selVideoModel" title="视频模型"></select>
       <span class="ver-badge">480P</span>
+      <button class="btn ghost" id="btnToSetup" title="返回剧本分解页">📄 剧本</button>
+      <button class="btn ghost" id="btnToggleAssets" title="打开/收起资产库">📦 资产库</button>
       <button class="btn primary" id="btnCompose">🎬 生成视频</button>
     </div>
   </header>
-  <div class="editor-grid">
-    <!-- 第1列：剧本 -->
-    <section class="col col-script">
-      <div class="col-head">
-        <h3>📝 剧本</h3>
-        <div>
-          <button class="btn ghost small" id="btnParseScript" title="AI拆解剧本为分镜">✨ AI拆解</button>
-        </div>
-      </div>
-      <div class="col-body">
-        <textarea id="scriptInput" placeholder="在此输入或粘贴剧本文本……&#10;&#10;点击「AI拆解」自动分析为分镜（含人物/场景/道具识别、台词提取）。"></textarea>
-        <div class="script-meta">
-          <label>画幅</label>
-          <select id="aspectSel"><option value="9:16">9:16 竖屏</option><option value="16:9">16:9 横屏</option></select>
-        </div>
-      </div>
-    </section>
-    <!-- 第2列：分镜 -->
-    <section class="col col-story">
-      <div class="col-head"><h3 id="storyColTitle">🎞 分镜</h3><button class="btn ghost small" id="btnAddShot">＋ 添加分镜</button></div>
-      <div class="col-body" id="shotsWrap"></div>
-    </section>
-    <!-- 第3列：资产（人物/场景/道具/其他/音效） -->
-    <section class="col col-assets">
+  <div class="editor-main">
+    <!-- 九列分镜表 -->
+    <div class="story-table-wrap">
+      <table class="story-table">
+        <thead>
+          <tr>
+            <th class="st-no">序号</th>
+            <th class="st-script">剧本</th>
+            <th class="st-chars">出场人物</th>
+            <th class="st-scene">场景</th>
+            <th class="st-props">道具</th>
+            <th class="st-others">其他</th>
+            <th class="st-aux">辅助</th>
+            <th class="st-img" id="storyColTitle">分镜图</th>
+            <th class="st-video">视频</th>
+          </tr>
+        </thead>
+        <tbody id="shotsWrap"></tbody>
+      </table>
+      <div class="story-add-row" id="storyAddRow"><button class="btn ghost" id="btnAddShot">＋ 添加分镜</button></div>
+    </div>
+    <!-- 资产库抽屉（项目级共享） -->
+    <aside class="asset-drawer hidden" id="assetDrawer">
       <div class="col-head">
         <h3>📦 资产库 <span class="col-sub" id="assetProjTag"></span></h3>
-        <button class="btn ghost small" id="btnAddAsset">＋ 新增资产</button>
+        <button class="btn ghost small" id="btnAddAsset">＋ 新增</button>
       </div>
       <div class="asset-tabs" id="assetTabs">
         <button class="asset-tab active" data-tab="characters">👥 人物</button>
@@ -118,8 +151,8 @@
         <button class="asset-tab" data-tab="others">✨ 其他</button>
         <button class="asset-tab" data-tab="sfx">🔊 音效</button>
       </div>
-      <div class="col-body" id="assetsWrap"></div>
-    </section>
+      <div class="drawer-body" id="assetsWrap"></div>
+    </aside>
   </div>
 </div>
 

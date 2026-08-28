@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('mochi', {
 
   // 视频合成（480P 固定）
   composeVideo: (spec) => ipcRenderer.invoke('video:compose', spec),
+  genShotVideo: (spec) => ipcRenderer.invoke('video:genShot', spec),
   onComposeProgress: (cb) => ipcRenderer.on('compose:progress', (e, d) => cb(d)),
 
   // 本地备份

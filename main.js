@@ -74,7 +74,7 @@ function downloadTo(url, dest) {
     return r.arrayBuffer();
   }).then(buf => { fs.writeFileSync(dest, Buffer.from(buf)); return dest; });
 }
-const DIMS = { '16:9': { w: 854, h: 480 }, '9:16': { w: 480, h: 854 } }; // 用户端统一480P
+const DIMS = { '16:9': { w: 854, h: 480 }, '9:16': { w: 480, h: 854 }, '1:1': { w: 480, h: 480 }, '4:3': { w: 640, h: 480 } }; // 用户端统一480P
 
 // ---------- TTS 配音（本地生成 → base64 返回，由渲染层上传到协作服务共享） ----------
 ipcMain.handle('tts:generate', async (e, { text, voice, rate, pitch }) => {
@@ -97,86 +97,93 @@ function getAudioDuration(file) {
   });
 }
 
-// ---------- 视频合成（480P 固定，支持视频模型生成画面 + 配音/音效混音 + 字幕） ----------
+// ---------- 单镜片段合成（480P）：整片合成与"视频"列单镜生成共用 ----------
+async function buildSegment(ctx, sh, i) {
+  const { dim, aspect, serverBase, token, videoModelId, projectId, tmp, report } = ctx;
+  report('准备素材：' + (sh.text || '').slice(0, 18));
+  // 1) 画面来源：视频模型 > 首帧/分镜图
+  let videoFile = null;
+  if (videoModelId && serverBase) {
+    const body = JSON.stringify({
+      projectId, modelId: videoModelId, prompt: sh.videoPrompt || '', aspect,
+      firstFrame: sh.firstImgUrl || undefined, lastFrame: sh.lastImgUrl || undefined
+    });
+    const r = await net.fetch(serverBase.replace(/\/+$/, '') + '/api/ai/video', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, { 'Authorization': 'Bearer ' + token }), body });
+    const d = await r.json();
+    if (!d.ok) throw new Error('分镜' + (i + 1) + ' 视频模型生成失败: ' + (d.error || ''));
+    videoFile = await downloadTo(serverBase.replace(/\/+$/, '') + d.url, path.join(tmp, 'v' + i + '.mp4'));
+  }
+  // 2) 下载配音/音效/图片
+  let voiceFile = null, sfxFile = null, imgFile = null;
+  if (sh.voiceUrl) voiceFile = await downloadTo(sh.voiceUrl, path.join(tmp, 'a' + i + '.mp3'));
+  if (sh.sfxUrl) sfxFile = await downloadTo(sh.sfxUrl, path.join(tmp, 's' + i + path.extname(sh.sfxUrl.split('?')[0]).slice(0, 5)));
+  const imgUrl = videoFile ? null : (sh.firstImgUrl || sh.storyboardImgUrl || sh.lastImgUrl);
+  if (imgUrl) imgFile = await downloadTo(imgUrl, path.join(tmp, 'i' + i + '.png'));
+  if (!videoFile && !imgFile) throw new Error('分镜' + (i + 1) + ' 缺少画面（请生成分镜图或配置视频模型）');
+  // 3) 音频时长
+  let voiceDur = 0, sfxDur = 0;
+  if (voiceFile) voiceDur = await getAudioDuration(voiceFile);
+  if (sfxFile) sfxDur = await getAudioDuration(sfxFile);
+  const dur = Math.max(videoFile ? 0 : 2.2, voiceDur + 0.4, sh.duration ? Math.min(sh.duration, 60) : 0, videoFile ? 4 : 0);
+  // 4) 合成单镜片段（480P）
+  report('合成片段');
+  const seg = path.join(SEGS_DIR, sh.id + '.mp4');
+  const af = [];
+  if (voiceFile) af.push({ f: voiceFile, d: voiceDur, vol: '1.0' });
+  if (sfxFile) af.push({ f: sfxFile, d: sfxDur, vol: '0.6' });
+  const hasAudio = af.length > 0;
+  // 字幕文本
+  const esc = s => String(s || '').replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\u2019").replace(/\n/g, ' ');
+  const subText = sh.dialogue ? (sh.speaker ? esc(sh.speaker) + '：' : '') + esc(sh.dialogue) : '';
+  // 输入序列：[0]=视频或图片，后续=音频；无音频时追加 lavfi 静音源
+  const inputs = [];
+  if (videoFile) inputs.push('-i', videoFile);
+  else inputs.push('-loop', '1', '-t', String(dur), '-i', imgFile);
+  af.forEach(a => inputs.push('-i', a.f));
+  if (!hasAudio) inputs.push('-f', 'lavfi', '-t', String(dur), '-i', 'anullsrc=r=44100:cl=stereo');
+  // 滤镜
+  const fcParts = [];
+  if (videoFile) {
+    fcParts.push(`[0:v]scale=${dim.w}:${dim.h}:force_original_aspect_ratio=increase,crop=${dim.w}:${dim.h},fps=30,setsar=1,tpad=stop_mode=clone:stop_duration=${Math.max(dur, 0.1).toFixed(2)}[vmain]`);
+  } else {
+    fcParts.push(`[0:v]scale=${dim.w}:${dim.h}:force_original_aspect_ratio=increase,crop=${dim.w}:${dim.h},fps=30,setsar=1,format=yuv420p[vmain]`);
+  }
+  if (subText) {
+    fcParts.push(`[vmain]drawtext=text='${subText}':fontfile='C\\:/Windows/Fonts/msyh.ttc':fontsize=${aspect === '16:9' ? 26 : 30}:fontcolor=white:borderw=2:bordercolor=black:box=1:boxcolor=black@0.35:boxborderw=12:x=(w-text_w)/2:y=h-th-52[vout]`);
+  } else { fcParts.push('[vmain]null[vout]'); }
+  let audioMap;
+  if (hasAudio) {
+    af.forEach((a, j) => fcParts.push(`[${j + 1}:a]aresample=44100,apad,atrim=0:${Math.max(a.d + 0.5, dur).toFixed(2)},volume=${a.vol}[a${j}]`));
+    fcParts.push(af.map((_, j) => `[a${j}]`).join('') + `amix=inputs=${af.length}:normalize=0,atrim=0:${dur.toFixed(2)}[aout]`);
+    audioMap = '[aout]';
+  } else {
+    audioMap = af.length + ':a'; // lavfi 输入索引（= 输入总数-1，视频0 + 音频们 + lavfi）
+  }
+  const args = [...inputs, '-filter_complex', fcParts.join(';'),
+    '-map', '[vout]', '-map', audioMap,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '128k', '-t', String(dur), '-y', seg];
+  await new Promise((resolve, reject) => {
+    execFile(ffmpegPath, args, { timeout: 300000, maxBuffer: 1024 * 1024 * 32 }, (err, stdout, stderr) => {
+      if (err) reject(new Error('FFmpeg片段失败: ' + String(stderr || err.message).slice(-400))); else resolve();
+    });
+  });
+  return { id: sh.id, path: seg, duration: dur, text: sh.text, dialogue: sh.dialogue, index: i };
+}
+
+// ---------- 整片合成（480P） ----------
 ipcMain.handle('video:compose', async (e, spec) => {
   const { name, aspect, shots, serverBase, token, videoModelId } = spec;
   const dim = DIMS[aspect] || DIMS['9:16'];
   const tmp = path.join(require('os').tmpdir(), 'qk-compose-' + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   const segs = [];
-  const headers = { 'Authorization': 'Bearer ' + token };
   try {
     for (let i = 0; i < shots.length; i++) {
-      const sh = shots[i];
-      reportProgress(i, shots.length, '准备素材 ' + (i + 1) + '/' + shots.length + '：' + (sh.text || '').slice(0, 18));
-      // 1) 画面来源：视频模型 > 首帧/分镜图
-      let videoFile = null;
-      if (videoModelId && serverBase) {
-        const body = JSON.stringify({
-          projectId: spec.projectId, modelId: videoModelId, prompt: sh.videoPrompt || '', aspect,
-          firstFrame: sh.firstImgUrl || undefined, lastFrame: sh.lastImgUrl || undefined
-        });
-        const r = await net.fetch(serverBase.replace(/\/+$/, '') + '/api/ai/video', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, headers), body });
-        const d = await r.json();
-        if (!d.ok) throw new Error('分镜' + (i + 1) + ' 视频模型生成失败: ' + (d.error || ''));
-        videoFile = await downloadTo(serverBase.replace(/\/+$/, '') + d.url, path.join(tmp, 'v' + i + '.mp4'));
-      }
-      // 2) 下载配音/音效/图片
-      let voiceFile = null, sfxFile = null, imgFile = null;
-      if (sh.voiceUrl) voiceFile = await downloadTo(sh.voiceUrl, path.join(tmp, 'a' + i + '.mp3'));
-      if (sh.sfxUrl) sfxFile = await downloadTo(sh.sfxUrl, path.join(tmp, 's' + i + path.extname(sh.sfxUrl.split('?')[0]).slice(0, 5)));
-      const imgUrl = videoFile ? null : (sh.firstImgUrl || sh.storyboardImgUrl || sh.lastImgUrl);
-      if (imgUrl) imgFile = await downloadTo(imgUrl, path.join(tmp, 'i' + i + '.png'));
-      if (!videoFile && !imgFile) throw new Error('分镜' + (i + 1) + ' 缺少画面（请生成分镜图或配置视频模型）');
-      // 3) 音频时长
-      let voiceDur = 0, sfxDur = 0;
-      if (voiceFile) voiceDur = await getAudioDuration(voiceFile);
-      if (sfxFile) sfxDur = await getAudioDuration(sfxFile);
-      const dur = Math.max(videoFile ? 0 : 2.2, voiceDur + 0.4, sh.duration ? Math.min(sh.duration, 60) : 0, videoFile ? 4 : 0);
-      // 4) 合成单镜片段（480P）
-      reportProgress(i, shots.length, '合成片段 ' + (i + 1) + '/' + shots.length);
-      const seg = path.join(SEGS_DIR, sh.id + '.mp4');
-      const af = [];
-      if (voiceFile) af.push({ f: voiceFile, d: voiceDur, vol: '1.0' });
-      if (sfxFile) af.push({ f: sfxFile, d: sfxDur, vol: '0.6' });
-      const hasAudio = af.length > 0;
-      // 字幕文本
-      const esc = s => String(s || '').replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\u2019").replace(/\n/g, ' ');
-      const subText = sh.dialogue ? (sh.speaker ? esc(sh.speaker) + '：' : '') + esc(sh.dialogue) : '';
-      // 输入序列：[0]=视频或图片，后续=音频；无音频时追加 lavfi 静音源
-      const inputs = [];
-      if (videoFile) inputs.push('-i', videoFile);
-      else inputs.push('-loop', '1', '-t', String(dur), '-i', imgFile);
-      af.forEach(a => inputs.push('-i', a.f));
-      if (!hasAudio) inputs.push('-f', 'lavfi', '-t', String(dur), '-i', 'anullsrc=r=44100:cl=stereo');
-      // 滤镜
-      const fcParts = [];
-      if (videoFile) {
-        fcParts.push(`[0:v]scale=${dim.w}:${dim.h}:force_original_aspect_ratio=increase,crop=${dim.w}:${dim.h},fps=30,setsar=1,tpad=stop_mode=clone:stop_duration=${Math.max(dur, 0.1).toFixed(2)}[vmain]`);
-      } else {
-        fcParts.push(`[0:v]scale=${dim.w}:${dim.h}:force_original_aspect_ratio=increase,crop=${dim.w}:${dim.h},fps=30,setsar=1,format=yuv420p[vmain]`);
-      }
-      if (subText) {
-        fcParts.push(`[vmain]drawtext=text='${subText}':fontfile='C\\:/Windows/Fonts/msyh.ttc':fontsize=${aspect === '16:9' ? 26 : 30}:fontcolor=white:borderw=2:bordercolor=black:box=1:boxcolor=black@0.35:boxborderw=12:x=(w-text_w)/2:y=h-th-52[vout]`);
-      } else { fcParts.push('[vmain]null[vout]'); }
-      let audioMap;
-      if (hasAudio) {
-        af.forEach((a, j) => fcParts.push(`[${j + 1}:a]aresample=44100,apad,atrim=0:${Math.max(a.d + 0.5, dur).toFixed(2)},volume=${a.vol}[a${j}]`));
-        fcParts.push(af.map((_, j) => `[a${j}]`).join('') + `amix=inputs=${af.length}:normalize=0,atrim=0:${dur.toFixed(2)}[aout]`);
-        audioMap = '[aout]';
-      } else {
-        audioMap = af.length + ':a'; // lavfi 输入索引（= 输入总数-1，视频0 + 音频们 + lavfi）
-      }
-      const args = [...inputs, '-filter_complex', fcParts.join(';'),
-        '-map', '[vout]', '-map', audioMap,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k', '-t', String(dur), '-y', seg];
-      await new Promise((resolve, reject) => {
-        execFile(ffmpegPath, args, { timeout: 300000, maxBuffer: 1024 * 1024 * 32 }, (err, stdout, stderr) => {
-          if (err) reject(new Error('FFmpeg片段失败: ' + String(stderr || err.message).slice(-400))); else resolve();
-        });
-      });
-      segs.push({ id: sh.id, path: seg, duration: dur, text: sh.text, dialogue: sh.dialogue, index: i });
+      const seg = await buildSegment(
+        { dim, aspect, serverBase, token, videoModelId, projectId: spec.projectId, tmp, report: t => reportProgress(i, shots.length, t + ' ' + (i + 1) + '/' + shots.length) },
+        shots[i], i);
+      segs.push(seg);
     }
     // 拼接
     reportProgress(shots.length, shots.length, '拼接成片…');
@@ -192,6 +199,23 @@ ipcMain.handle('video:compose', async (e, spec) => {
     });
     const total = segs.reduce((s, x) => s + x.duration, 0);
     return { ok: true, path: finalPath, name: finalName, duration: total, url: 'mochi-file://exports/' + encodeURIComponent(finalName), segments: segs.map(s => ({ id: s.id, index: s.index, duration: s.duration, url: 'mochi-file://segs/' + path.basename(s.path) })) };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { }
+  }
+});
+
+// ---------- 单镜视频生成（编辑器"视频"列，480P） ----------
+ipcMain.handle('video:genShot', async (e, spec) => {
+  const { shot, aspect, serverBase, token, videoModelId, projectId } = spec;
+  const dim = DIMS[aspect] || DIMS['9:16'];
+  const tmp = path.join(require('os').tmpdir(), 'qk-shot-' + Date.now());
+  fs.mkdirSync(tmp, { recursive: true });
+  try {
+    reportProgress(0, 1, '生成单镜视频…');
+    const seg = await buildSegment({ dim, aspect, serverBase, token, videoModelId, projectId, tmp, report: t => reportProgress(0, 1, t) }, shot, 0);
+    return { ok: true, path: seg.path, duration: seg.duration, url: 'mochi-file://segs/' + encodeURIComponent(path.basename(seg.path)) };
   } catch (err) {
     return { ok: false, error: String(err.message || err) };
   } finally {

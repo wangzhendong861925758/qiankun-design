@@ -23,6 +23,18 @@ const VOICES = [
   ['zh-CN-XiaoyiNeural', '晓伊(女·活泼)'], ['zh-CN-YunjianNeural', '云健(男·浑厚)'], ['zh-CN-liaoning-XiaobeiNeural', '小北(东北)'],
   ['zh-TW-HsiaoChenNeural', '晓臻(台湾)'], ['zh-HK-HiuMaanNeural', '曉曼(粤语)']
 ];
+// 画面风格预设（剧本分解页选择，供 AI 拆解与生图参考）
+const STYLES = [
+  ['国漫风', '国漫风格，线条细腻，色彩明快'],
+  ['日漫风', '日本动漫风格，赛璐璐上色，清新唯美'],
+  ['美漫风', '美式漫画风格，线条硬朗，对比强烈'],
+  ['写实电影', '写实电影质感，光影真实，电影级构图'],
+  ['3D渲染', '3D卡通渲染，皮克斯风格，立体圆润'],
+  ['水墨画', '中国水墨画风，留白意境，笔墨晕染'],
+  ['赛博朋克', '赛博朋克风格，霓虹光效，未来都市'],
+  ['像素风', '像素艺术风格，复古游戏画面']
+];
+const ASPECTS = [['9:16', '9:16 竖屏', 36, 64], ['16:9', '16:9 横屏', 64, 36], ['1:1', '1:1 方形', 48, 48], ['4:3', '4:3 传统', 56, 42]];
 
 // ---------- Toast / 弹窗 ----------
 function toast(msg, type, ms) {
@@ -45,7 +57,7 @@ $('#modalMask').addEventListener('click', e => { if (e.target === $('#modalMask'
 // ---------- 页面切换 ----------
 function showPage(name) {
   S.page = name;
-  ['login', 'projects', 'episodes', 'editor', 'admin'].forEach(p => {
+  ['login', 'projects', 'episodes', 'setup', 'editor', 'admin'].forEach(p => {
     $('#page-' + p).classList.toggle('hidden', p !== name);
   });
 }
@@ -221,21 +233,67 @@ async function openEpisode(id) {
   try {
     const r = await S.api.episode(id);
     S.episode = r.episode;
-    S.data = Object.assign({ aspect: '9:16', script: '', shots: [] }, r.data);
+    S.data = Object.assign({ aspect: '9:16', style: '', script: '', shots: [] }, r.data);
     if (!Array.isArray(S.data.shots)) S.data.shots = [];
     $('#edEpisodeName').textContent = S.project.name + ' · ' + S.episode.name;
+    $('#setupEpName').textContent = S.project.name + ' · ' + S.episode.name + ' · 剧本分解';
     $('#assetProjTag').textContent = '（' + S.project.name + ' 全员共享）';
     // 模型选择恢复
     const saved = JSON.parse(localStorage.getItem('qk_sel_' + S.project.id) || '{}');
     S.sel = { text: saved.text || '', image: saved.image || '', video: saved.video || '' };
     renderModelSels();
-    renderEditor();
-    showPage('editor');
-    // 实时协作
+    // 实时协作（分解页与编辑页共用一条连接）
     S.collab.connect(S.base, S.token);
     S.collab.join(S.project.id, S.episode.id);
     setSaveState(true);
+    showSetup();
   } catch (e) { toast(e.message, 'err'); }
+}
+// ---------- 剧本分解页 ----------
+function showSetup() {
+  renderSetup();
+  showPage('setup');
+}
+function renderSetup() {
+  $('#setupScript').value = S.data.script || '';
+  // 风格
+  $('#styleChips').innerHTML = STYLES.map(([name]) =>
+    `<button class="style-chip${S.data.style === name ? ' active' : ''}" data-style="${esc(name)}">${esc(name)}</button>`).join('');
+  $$('#styleChips .style-chip').forEach(c => c.onclick = () => {
+    S.data.style = c.dataset.style;
+    emitOp({ kind: 'episode-meta', episodeId: S.episode.id, style: S.data.style });
+    $$('#styleChips .style-chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+  });
+  // 比例
+  $('#aspectOpts').innerHTML = ASPECTS.map(([v, label, w, h]) => `
+    <button class="aspect-opt${S.data.aspect === v ? ' active' : ''}" data-v="${v}">
+      <span class="ao-box" style="width:${w}px;height:${h}px"></span><span>${label}</span>
+    </button>`).join('');
+  $$('#aspectOpts .aspect-opt').forEach(b => b.onclick = () => {
+    S.data.aspect = b.dataset.v;
+    emitOp({ kind: 'episode-meta', episodeId: S.episode.id, aspect: S.data.aspect });
+    $$('#aspectOpts .aspect-opt').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+  });
+  // 已有分镜提示
+  const n = S.data.shots.length;
+  const badge = $('#setupExistBadge');
+  badge.textContent = n ? '已有 ' + n + ' 个分镜' : '';
+  $('#setupHint').textContent = n ? '该分集已有 ' + n + ' 个分镜，重新解析将覆盖现有分镜（剧本与资产不受影响）。' : '';
+  $('#btnSkipParse').textContent = n ? '⏭ 直接进入操作界面（保留已有分镜）' : '⏭ 跳过剧本拆解，直接进入';
+}
+function enterEditorPage() {
+  renderEditor();
+  showPage('editor');
+}
+async function skipParse() {
+  // 保存分解页填写的剧本/风格/比例
+  S.data.script = $('#setupScript').value;
+  emitOp({ kind: 'episode-meta', episodeId: S.episode.id, script: S.data.script });
+  flushOps();
+  enterEditorPage();
+  if (!S.data.shots.length) toast('已跳过拆解，点击「＋ 添加分镜」开始手动创作', '', 3500);
 }
 function renderModelSels() {
   const mk = (elId, list, key, label) => {
@@ -256,21 +314,19 @@ function renderModelSels() {
   mk('#selVideoModel', S.project.models.video || [], 'video', '视频模型');
 }
 function renderEditor() {
-  $('#scriptInput').value = S.data.script || '';
-  $('#aspectSel').value = S.data.aspect || '9:16';
   renderShots();
   renderAssets();
 }
 function shotById(id) { return S.data.shots.find(s => s.id === id); }
 function assetsOf(kind) { return (S.project.assets && S.project.assets[kind]) || []; }
 
-// ---------- 分镜渲染 ----------
+// ---------- 分镜渲染（九列操作表格） ----------
 function renderShots() {
   const mode = videoMode();
-  $('#storyColTitle').textContent = '🎞 分镜' + (mode === 'firstlast' ? '（首尾帧模式）' : '');
+  $('#storyColTitle').textContent = mode === 'firstlast' ? '分镜首尾帧' : '分镜图';
   const wrap = $('#shotsWrap');
   if (!S.data.shots.length) {
-    wrap.innerHTML = '<div class="story-empty">暂无分镜<br><br>在左侧输入剧本后点击「✨ AI拆解」，<br>或点击右上角「＋ 添加分镜」</div>';
+    wrap.innerHTML = `<tr class="story-empty-row"><td colspan="9"><div class="story-empty">暂无分镜<br><br>可返回「📄 剧本」分解页解析剧本，<br>或点击下方「＋ 添加分镜」手动创作</div></td></tr>`;
     return;
   }
   const A = S.project.assets || { characters: [], scenes: [], props: [], others: [], sfx: [] };
@@ -294,34 +350,37 @@ function renderShots() {
       ? `<div class="frames-row">${frameSlot('首帧图', 'firstImg')}${frameSlot('尾帧图', 'lastImg')}</div>`
       : `<div class="frames-row">${frameSlot('分镜图', 'storyboardImg')}</div>`;
     return `
-    <div class="shot-card" data-id="${s.id}">
-      <div class="shot-head">
-        <span class="shot-no">镜 ${i + 1}</span>
-        <div class="shot-actions">
-          <button class="btn ghost small" data-act="gen-img" title="AI生成分镜图">🖼</button>
-          <button class="btn ghost small" data-act="gen-voice" title="AI配音">🎙</button>
+    <tr class="shot-card" data-id="${s.id}">
+      <td class="st-no">
+        <div class="shot-no">${i + 1}</div>
+        <div class="no-btns">
           <button class="btn ghost small" data-act="up" title="上移">↑</button>
           <button class="btn ghost small" data-act="down" title="下移">↓</button>
           <button class="btn ghost small danger" data-act="del" title="删除">✕</button>
         </div>
-      </div>
-      <div class="shot-grid">
-        <div class="shot-field full"><label>画面描述</label><textarea data-f="text">${esc(s.text)}</textarea></div>
-        <div class="shot-field"><label>台词</label><textarea data-f="dialogue">${esc(s.dialogue)}</textarea></div>
-        <div class="shot-field"><label>说话人</label><input data-f="speaker" value="${esc(s.speaker)}"></div>
-        <div class="shot-field"><label>出场人物</label><select data-f="characterIds" multiple size="2">${chars}</select></div>
-        <div class="shot-field"><label>场景</label><select data-f="sceneId"><option value="">（无）</option>${scenes}</select></div>
-        <div class="shot-field"><label>道具</label><select data-f="propIds" multiple size="2">${props}</select></div>
-        <div class="shot-field"><label>其他参考</label><select data-f="otherIds" multiple size="2">${others}</select></div>
-        <div class="shot-field"><label>音效</label><select data-f="sfxId"><option value="">（无）</option>${sfx}</select></div>
-      </div>
-      ${framesHtml}
-      <div class="voice-row">
-        ${s.voiceUrl ? `<audio controls preload="none" src="${esc(S.api.abs(s.voiceUrl))}"></audio>` : '<span style="font-size:11px;color:var(--text3)">未配音</span>'}
+      </td>
+      <td class="st-script">
+        <textarea data-f="text" placeholder="画面描述">${esc(s.text)}</textarea>
+        <textarea data-f="dialogue" class="mini" placeholder="台词">${esc(s.dialogue)}</textarea>
+        <input data-f="speaker" class="mini" placeholder="说话人" value="${esc(s.speaker)}">
+      </td>
+      <td class="st-chars"><select data-f="characterIds" multiple size="4"><option value="" disabled>（选择出场人物）</option>${chars}</select></td>
+      <td class="st-scene"><select data-f="sceneId"><option value="">（无）</option>${scenes}</select></td>
+      <td class="st-props"><select data-f="propIds" multiple size="4">${props}</select></td>
+      <td class="st-others"><select data-f="otherIds" multiple size="4">${others}</select></td>
+      <td class="st-aux">
+        <button class="btn small" data-act="gen-img" ${!(S.project.models.image || []).length ? 'disabled' : ''}>🖼 AI生成分镜图</button>
+        <select data-f="voice" class="mini">${VOICES.map(v => `<option value="${v[0]}" ${s.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select>
         <button class="btn small" data-act="gen-voice">🎙 配音</button>
-        <select data-f="voice" style="width:110px;font-size:11px">${VOICES.map(v => `<option value="${v[0]}" ${s.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select>
-      </div>
-    </div>`;
+        ${s.voiceUrl ? `<audio controls preload="none" src="${esc(S.api.abs(s.voiceUrl))}"></audio>` : ''}
+        <select data-f="sfxId" class="mini"><option value="">音效（无）</option>${sfx}</select>
+      </td>
+      <td class="st-img">${framesHtml}</td>
+      <td class="st-video">
+        ${s.videoUrl ? `<video controls preload="none" src="${esc(s.videoUrl)}"></video>` : '<span class="v-empty">未生成</span>'}
+        <button class="btn small" data-act="gen-video">🎬 生成本镜视频</button>
+      </td>
+    </tr>`;
   }).join('');
 }
 
@@ -509,13 +568,15 @@ function buildAssetPrompt(kind, name, desc) {
   return `为漫剧生成${kindName}资产设定图：${name}。${desc || ''}。高质量插画风格，主体突出，细节丰富，适合作为动画制作参考图。`;
 }
 
-// ---------- AI 拆解剧本 ----------
+// ---------- AI 拆解剧本（剧本分解页「开始解析」） ----------
 async function parseScript() {
-  const script = $('#scriptInput').value.trim();
+  const script = $('#setupScript').value.trim();
   if (!script) return toast('请先输入剧本内容', 'err');
   if (!(S.project.models.text || []).length) return toast('该项目未配置文本模型，请联系管理员', 'err');
-  const btn = $('#btnParseScript');
-  btn.disabled = true; btn.textContent = '⏳ 拆解中…';
+  const btn = $('#btnStartParse');
+  const hint = $('#setupHint');
+  btn.disabled = true; btn.textContent = '⏳ 解析中…';
+  hint.textContent = 'AI 正在拆解剧本，请稍候（长剧本可能需要 1-2 分钟）…';
   try {
     const A = S.project.assets || {};
     const assetList = {
@@ -525,10 +586,11 @@ async function parseScript() {
       others: (A.others || []).map(c => c.name),
       sfx: (A.sfx || []).map(c => c.name)
     };
+    const styleDesc = (STYLES.find(x => x[0] === S.data.style) || ['', ''])[1];
     const sys = `你是专业的漫剧分镜师。将剧本拆解为分镜列表。严格返回JSON：
 {"shots":[{"text":"画面描述","dialogue":"台词(无台词则为空串)","speaker":"说话人名(无则空)","characters":["出场人物名"],"scene":"场景名(无则空)","props":["道具名"],"other":["其他参考"],"sfx":"音效名(无则空)"}]}
-规则：1.按剧情节奏拆分(通常每镜2-4句旁白/对话) 2.人物/场景/道具尽量从已有资产列表匹配 3.台词=该镜所有对白原文 4.只返回JSON。`;
-    const usr = `已有资产：${JSON.stringify(assetList)}\n\n剧本：\n${script.slice(0, 8000)}`;
+规则：1.按剧情节奏拆分(通常每镜2-4句旁白/对话) 2.人物/场景/道具尽量从已有资产列表匹配 3.台词=该镜所有对白原文 4.画面描述需符合指定画风 5.只返回JSON。`;
+    const usr = `画风：${S.data.style || '未指定'}（${styleDesc || '自由发挥'}）\n画幅：${S.data.aspect || '9:16'}\n已有资产：${JSON.stringify(assetList)}\n\n剧本：\n${script.slice(0, 8000)}`;
     const r = await S.api.aiText(S.project.id, S.sel.text, [{ role: 'system', content: sys }, { role: 'user', content: usr }], true);
     const j = extractJSON(r.content);
     const shots = (j.shots || []).map(o => ({
@@ -543,14 +605,18 @@ async function parseScript() {
       voiceUrl: '', voice: 'zh-CN-XiaoxiaoNeural'
     }));
     if (!shots.length) throw new Error('AI 未拆解出分镜');
-    S.data.shots = shots;
+    // 保存剧本/风格/比例并替换分镜（实时同步）
     S.data.script = script;
+    S.data.shots = shots;
     emitOp({ kind: 'shots-replace', episodeId: S.episode.id, shots, script });
-    renderShots();
-    toast('拆解完成：' + shots.length + ' 个分镜', 'ok');
+    emitOp({ kind: 'episode-meta', episodeId: S.episode.id, style: S.data.style, aspect: S.data.aspect });
+    flushOps();
+    toast('拆解完成：' + shots.length + ' 个分镜，正在进入操作界面…', 'ok');
+    enterEditorPage(); // 平滑过渡至九列操作界面
   } catch (e) {
+    hint.textContent = '';
     toast('拆解失败：' + (e.message || e), 'err', 4500);
-  } finally { btn.disabled = false; btn.textContent = '✨ AI拆解'; }
+  } finally { btn.disabled = false; btn.textContent = '✨ 开始解析'; }
 }
 function matchAssets(list, names) {
   if (!list || !names) return [];
@@ -756,7 +822,7 @@ function initCollab() {
     } else if (op.kind === 'shot-delete') {
       S.data.shots = S.data.shots.filter(s => s.id !== op.shotId); rerender = true;
     } else if (op.kind === 'shots-replace') {
-      S.data.shots = op.shots; if (op.script !== undefined) { S.data.script = op.script; $('#scriptInput').value = op.script; }
+      S.data.shots = op.shots; if (op.script !== undefined) { S.data.script = op.script; $('#setupScript').value = op.script; }
       rerender = true;
     } else if (op.kind === 'shot-reorder') {
       const map = new Map(S.data.shots.map(s => [s.id, s]));
@@ -764,8 +830,11 @@ function initCollab() {
     } else if (op.kind === 'assets-update') {
       S.project.assets = op.assets; rerenderAssets = true;
     } else if (op.kind === 'episode-meta') {
-      if (op.aspect !== undefined) { S.data.aspect = op.aspect; $('#aspectSel').value = op.aspect; }
-      if (op.script !== undefined) { S.data.script = op.script; $('#scriptInput').value = op.script; }
+      if (op.aspect !== undefined) S.data.aspect = op.aspect;
+      if (op.style !== undefined) S.data.style = op.style;
+      if (op.script !== undefined) { S.data.script = op.script; $('#setupScript').value = op.script; }
+      // 分解页打开时同步刷新风格/比例选中态
+      if (S.page === 'setup') renderSetup();
     }
     // 焦点保护：正在输入的控件不重绘（避免打断打字）
     const focusEl = document.activeElement;
@@ -784,11 +853,11 @@ function initCollab() {
     el.textContent = '👥 ' + others.map(u => u.name).join('、') + (others.length > 1 ? ' 正在协作' : ' 正在编辑');
   };
   S.collab.onClose = () => {
-    if (S.page === 'editor') {
+    if (S.page === 'editor' || S.page === 'setup') {
       setSaveState(false);
       clearTimeout(S.wsRetryTimer);
       S.wsRetryTimer = setTimeout(() => {
-        if (S.page !== 'editor') return;
+        if (S.page !== 'editor' && S.page !== 'setup') return;
         try { S.collab.connect(S.base, S.token); S.collab.join(S.project.id, S.episode.id); fullSaveEpisode(); } catch (e) { }
       }, 3000);
     }
@@ -1069,20 +1138,25 @@ function init() {
     openProject(S.project.id);
   };
   // 编辑器
-  $('#btnParseScript').onclick = parseScript;
   $('#btnAddShot').onclick = addShot;
   $('#btnAddAsset').onclick = () => openAssetModal(S.assetTab, null);
   $('#btnCompose').onclick = composeVideo;
-  let scriptTimer = null;
-  $('#scriptInput').addEventListener('input', e => {
-    S.data.script = e.target.value;
-    clearTimeout(scriptTimer);
-    scriptTimer = setTimeout(() => emitOp({ kind: 'episode-meta', episodeId: S.episode.id, script: e.target.value }), 800);
-  });
-  $('#aspectSel').onchange = e => {
-    S.data.aspect = e.target.value;
-    emitOp({ kind: 'episode-meta', episodeId: S.episode.id, aspect: e.target.value });
+  // 剧本分解页
+  $('#btnStartParse').onclick = parseScript;
+  $('#btnSkipParse').onclick = skipParse;
+  $('#btnSetupBack').onclick = async () => {
+    flushOps(); await fullSaveEpisode();
+    S.collab.leave();
+    openProject(S.project.id);
   };
+  $('#btnToSetup').onclick = () => showSetup(); // 编辑器返回分解页
+  $('#btnToggleAssets').onclick = () => $('#assetDrawer').classList.toggle('hidden'); // 资产库抽屉开关
+  let setupScriptTimer = null;
+  $('#setupScript').addEventListener('input', e => {
+    S.data.script = e.target.value;
+    clearTimeout(setupScriptTimer);
+    setupScriptTimer = setTimeout(() => emitOp({ kind: 'episode-meta', episodeId: S.episode.id, script: e.target.value }), 800);
+  });
   // 管理端页签
   $$('.admin-tab').forEach(t => t.onclick = () => {
     $$('.admin-tab').forEach(x => x.classList.remove('active'));
@@ -1090,7 +1164,7 @@ function init() {
   });
   // 关闭前保存
   window.addEventListener('beforeunload', () => { flushOps(); });
-  // 每30秒兜底全量保存
-  setInterval(() => { if (S.page === 'editor') fullSaveEpisode(); }, 30000);
+  // 每30秒兜底全量保存（分解页与编辑页均保存）
+  setInterval(() => { if (S.page === 'editor' || S.page === 'setup') fullSaveEpisode(); }, 30000);
 }
 init();
