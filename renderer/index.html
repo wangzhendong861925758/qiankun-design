@@ -38,7 +38,7 @@
   </div>
 </div>
 
-<!-- ============ 项目列表页 ============ -->
+<!-- ============ 项目列表页（图1样式） ============ -->
 <div class="page hidden" id="page-projects">
   <header class="topbar">
     <div class="topbar-left"><div class="logo">☯ <span>乾坤设计</span></div></div>
@@ -49,110 +49,261 @@
     </div>
   </header>
   <div class="page-body">
-    <div class="page-head"><h2>选择项目</h2><p class="page-desc">项目由管理员创建，所有成员共享项目下的人物、场景、道具、音频资产，并可实时共创。</p></div>
-    <div class="proj-grid" id="projGrid"></div>
-  </div>
-</div>
-
-<!-- ============ 分集列表页 ============ -->
-<div class="page hidden" id="page-episodes">
-  <header class="topbar">
-    <div class="topbar-left"><button class="btn ghost small" id="btnBackProj">← 项目</button><div class="logo small">🜂 <span id="epProjName"></span></div></div>
-    <div class="topbar-right"><button class="btn primary" id="btnNewEpisode">＋ 新建分集</button></div>
-  </header>
-  <div class="page-body">
-    <div class="page-head"><h2>分集列表</h2><p class="page-desc">每集独立剧本与分镜；资产全项目共享。点击进入编辑，多人可同时编辑同一集。</p></div>
-    <div class="ep-list" id="epList"></div>
-  </div>
-</div>
-
-<!-- ============ 剧本分解页（进入分集后第一步） ============ -->
-<div class="page hidden" id="page-setup">
-  <header class="topbar">
-    <div class="topbar-left">
-      <button class="btn ghost small" id="btnSetupBack">← 分集</button>
-      <div class="logo small">🧩 <span id="setupEpName"></span></div>
+    <!-- 最近项目卡片行 -->
+    <div class="section-title">
+      <span>最近项目</span>
+      <select class="filter-sel" id="projFilter"><option value="all">全部</option></select>
     </div>
-    <div class="topbar-right"><span class="ver-badge" id="setupExistBadge"></span></div>
-  </header>
-  <div class="setup-body">
-    <div class="setup-card">
-      <h2>剧本分解</h2>
-      <p class="setup-desc">输入本集剧本并选择画风与画幅，AI 将自动拆解为分镜；也可以跳过拆解直接进入操作界面手动创作。</p>
+    <div class="recent-cards" id="projCards"></div>
 
-      <div class="setup-step"><span class="step-no">1</span>剧本内容</div>
-      <textarea id="setupScript" class="setup-script" placeholder="在此输入或粘贴本集剧本文本……&#10;&#10;例如：&#10;夜色如墨，少年林凡独自走进幽暗森林。&#10;「不管前面是什么，我都要找到那把剑。」他握紧拳头……"></textarea>
-
-      <div class="setup-step"><span class="step-no">2</span>画面风格</div>
-      <div class="style-chips" id="styleChips"></div>
-
-      <div class="setup-step"><span class="step-no">3</span>屏幕比例</div>
-      <div class="aspect-opts" id="aspectOpts"></div>
-
-      <div class="setup-actions">
-        <button class="btn ghost" id="btnSkipParse">⏭ 跳过剧本拆解，直接进入</button>
-        <button class="btn primary" id="btnStartParse">✨ 开始解析</button>
-      </div>
-      <p class="setup-hint" id="setupHint"></p>
+    <!-- 作品列表 -->
+    <div class="work-tabs">
+      <button class="work-tab active" data-tab="recent">最近作品</button>
+      <button class="work-tab" data-tab="expire">即将过期</button>
     </div>
-  </div>
-</div>
-
-<!-- ============ 编辑器页（九列操作界面） ============ -->
-<div class="page hidden" id="page-editor">
-  <header class="topbar">
-    <div class="topbar-left">
-      <button class="btn ghost small" id="btnBackEps">← 分集</button>
-      <div class="logo small">🎬 <span id="edEpisodeName"></span></div>
-      <span class="save-badge" id="saveBadge">已实时保存</span>
-      <span class="presence-badge" id="presenceBadge"></span>
-    </div>
-    <div class="topbar-right">
-      <select class="model-sel" id="selTextModel" title="文本模型"></select>
-      <select class="model-sel" id="selImageModel" title="图片模型"></select>
-      <select class="model-sel" id="selVideoModel" title="视频模型"></select>
-      <span class="ver-badge">480P</span>
-      <button class="btn ghost" id="btnToSetup" title="返回剧本分解页">📄 剧本</button>
-      <button class="btn ghost" id="btnToggleAssets" title="打开/收起资产库">📦 资产库</button>
-      <button class="btn primary" id="btnCompose">🎬 生成视频</button>
-    </div>
-  </header>
-  <div class="editor-main">
-    <!-- 九列分镜表 -->
-    <div class="story-table-wrap">
-      <table class="story-table">
+    <div class="work-table-wrap">
+      <table class="work-table">
         <thead>
           <tr>
-            <th class="st-no">序号</th>
-            <th class="st-script">剧本</th>
-            <th class="st-chars">出场人物</th>
-            <th class="st-scene">场景</th>
-            <th class="st-props">道具</th>
-            <th class="st-others">其他</th>
-            <th class="st-aux">辅助</th>
-            <th class="st-img" id="storyColTitle">分镜图</th>
-            <th class="st-video">视频</th>
+            <th>作品类型</th>
+            <th>所属项目</th>
+            <th>作品名称</th>
+            <th>所属账号</th>
+            <th>最后编辑时间</th>
+            <th>当前编辑</th>
+            <th>画面比例</th>
+            <th>时长</th>
+            <th>操作</th>
           </tr>
         </thead>
-        <tbody id="shotsWrap"></tbody>
+        <tbody id="workListBody"></tbody>
       </table>
-      <div class="story-add-row" id="storyAddRow"><button class="btn ghost" id="btnAddShot">＋ 添加分镜</button></div>
     </div>
-    <!-- 资产库抽屉（项目级共享） -->
-    <aside class="asset-drawer hidden" id="assetDrawer">
-      <div class="col-head">
-        <h3>📦 资产库 <span class="col-sub" id="assetProjTag"></span></h3>
-        <button class="btn ghost small" id="btnAddAsset">＋ 新增</button>
+  </div>
+</div>
+
+<!-- ============ 项目详情/分集列表页（图2样式） ============ -->
+<div class="page hidden" id="page-episodes">
+  <header class="topbar proj-topbar">
+    <div class="topbar-left">
+      <div class="proj-head">
+        <div class="proj-avatar" id="epProjAvatar">封</div>
+        <div class="proj-head-info">
+          <div class="proj-head-name">
+            <span id="epProjName"></span>
+            <span class="tag-ai">AI漫剧</span>
+            <span class="tag-personal">个人</span>
+          </div>
+          <div class="proj-head-sub" id="epProjDesc">Ta很懒，什么信息都没留下~</div>
+          <div class="proj-head-owner">项目归属：<span id="epProjOwner"></span></div>
+        </div>
       </div>
-      <div class="asset-tabs" id="assetTabs">
-        <button class="asset-tab active" data-tab="characters">👥 人物</button>
-        <button class="asset-tab" data-tab="scenes">🏞 场景</button>
-        <button class="asset-tab" data-tab="props">🗡 道具</button>
-        <button class="asset-tab" data-tab="others">✨ 其他</button>
-        <button class="asset-tab" data-tab="sfx">🔊 音效</button>
+    </div>
+    <div class="topbar-right">
+      <button class="btn ghost" id="btnBackProj">← 返回</button>
+    </div>
+  </header>
+  <div class="page-body">
+    <div class="proj-tabs">
+      <button class="proj-tab active" data-tab="works">作品列表</button>
+      <button class="proj-tab" data-tab="assets">项目资产</button>
+      <button class="proj-tab" data-tab="members">成员管理</button>
+      <button class="proj-tab" data-tab="trash">回收站</button>
+      <div class="proj-tabs-right">
+        <button class="icon-btn" title="搜索">🔍</button>
+        <select class="filter-sel small" id="epFilter"><option value="all">全部</option></select>
+        <button class="btn danger-outline" id="btnExitProj">退出项目</button>
+        <div class="dropdown">
+          <button class="btn primary" id="btnNewEpisode">创建作品 ▾</button>
+        </div>
       </div>
-      <div class="drawer-body" id="assetsWrap"></div>
+    </div>
+    <div class="ep-table-wrap">
+      <table class="work-table" id="epTable">
+        <thead>
+          <tr>
+            <th>作品名称</th>
+            <th>作品进度</th>
+            <th>总消耗</th>
+            <th>当前编辑人员</th>
+            <th>画面比例</th>
+            <th>时长</th>
+            <th>创建时间</th>
+            <th>最后编辑时间</th>
+            <th>过期时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="epListBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 剧本分解页（图3样式） ============ -->
+<div class="page hidden dark-page" id="page-setup">
+  <div class="setup-modal">
+    <div class="setup-modal-head">
+      <h2>创建作品</h2>
+      <button class="close-btn" id="btnSetupBack">✕</button>
+    </div>
+    <div class="setup-modal-body">
+      <!-- 比例切换（右上角） -->
+      <div class="setup-aspect-switch">
+        <button class="aspect-btn active" data-v="16:9" title="16:9 横屏">▭ 16:9</button>
+        <button class="aspect-btn" data-v="9:16" title="9:16 竖屏">▯ 9:16</button>
+      </div>
+
+      <!-- 左栏：创作输入 -->
+      <div class="setup-left">
+        <input type="text" id="setupTitle" class="setup-title-input" placeholder="作品标题，非必填">
+        <div class="setup-script-wrap">
+          <textarea id="setupScript" class="setup-script-big" placeholder="输入你的想法、主题、小说，AI帮你写成短脚本，参考示例： 一只小白兔的故事。"></textarea>
+          <div class="char-count"><span id="setupCharCount">0</span> / 5000</div>
+        </div>
+        <!-- 示例标签 -->
+        <div class="example-tags">
+          <span class="example-label">示例:</span>
+          <button class="example-tag" data-text="一只小白兔迷路后遇到森林朋友，经历冒险最终回家的温馨故事。">星星邮递员</button>
+          <button class="example-tag" data-text="少年意外获得神秘玉佩，卷入江湖恩怨，在刀光剑影中成长为一代侠客。">幻影之岛</button>
+          <button class="example-tag" data-text="现代少女穿越回唐朝，凭借现代知识在古代宫廷中步步为营。">长安一梦</button>
+          <button class="example-tag" data-text="编号734的机器人在末世中觉醒意识，踏上寻找自我存在意义的旅程。">编号734的苏醒</button>
+          <button class="example-tag" data-text="深夜咖啡馆里，每一位客人都有一个不为人知的秘密故事。">剑冢里的凡人</button>
+          <button class="example-tag" data-text="午夜12点，小镇上的神秘咖啡馆开始营业，为迷途之人提供一杯命运咖啡。">午夜咖啡馆</button>
+        </div>
+        <!-- 底部：风格+模型 -->
+        <div class="setup-bottom">
+          <button class="cmd-btn" id="btnStylePicker">默认指令 ▼</button>
+          <div class="model-bar">
+            <span class="model-name" id="setupModelName">Model 3.6 flash</span>
+            <span class="model-sep">|</span>
+            <span class="model-provider">AM <span class="dot-green">[cli]</span> <span class="dot-green">●</span></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右栏：创作要求 -->
+      <div class="setup-right">
+        <div class="setup-right-head">
+          <div class="grid-icon">▦</div>
+          <span>创作要求</span>
+          <button class="cmd-lib-btn" id="btnCmdLib">⧉ 指令库</button>
+        </div>
+        <div class="setup-req-wrap">
+          <textarea id="setupRequire" class="setup-require" placeholder="输入其他要求，例如：输出10个分镜"></textarea>
+          <div class="char-count"><span id="setupReqCount">0</span> / 1000</div>
+        </div>
+        <!-- 风格选择（隐藏在弹窗里，默认指令点开可见） -->
+        <div class="style-panel hidden" id="stylePanel">
+          <div class="style-panel-title">画面风格</div>
+          <div class="style-chips" id="styleChips"></div>
+        </div>
+      </div>
+    </div>
+    <div class="setup-modal-foot">
+      <button class="btn ghost-lg" id="btnSkipParse">跳过解析</button>
+      <button class="btn primary-lg gradient" id="btnStartParse">开始解析</button>
+    </div>
+    <p class="setup-hint" id="setupHint"></p>
+  </div>
+</div>
+
+<!-- ============ 编辑器页（图4样式：九列+右侧资产栏） ============ -->
+<div class="page hidden" id="page-editor">
+  <div class="editor-full">
+    <!-- 九列分镜表格 -->
+    <div class="story-board" id="storyBoard">
+      <div class="story-board-head">
+        <div class="sbh-cell sbh-no">
+          <input type="checkbox" id="checkAllShots">
+          <span>序号</span>
+          <div class="sbh-actions">
+            <button class="icon-btn-tiny" title="设置">⚙</button>
+            <button class="icon-btn-tiny" title="更多">⊛</button>
+          </div>
+        </div>
+        <div class="sbh-cell sbh-script">
+          <span>剧本</span>
+          <button class="icon-btn-tiny" title="折叠/展开">△</button>
+        </div>
+        <div class="sbh-cell sbh-chars">
+          <button class="sbh-add-btn" title="添加人物" id="btnAddCharCol">＋</button>
+          <span>出场人物</span>
+          <button class="icon-btn-tiny" title="人物设置">👤</button>
+        </div>
+        <div class="sbh-cell sbh-scene"><span>场景</span><button class="icon-btn-tiny" title="场景设置">🏔</button></div>
+        <div class="sbh-cell sbh-props"><span>道具</span><button class="icon-btn-tiny" title="道具设置">🎁</button></div>
+        <div class="sbh-cell sbh-others"><span>其他</span><button class="icon-btn-tiny" title="其他设置">⋯</button></div>
+        <div class="sbh-cell sbh-aux"><span>辅助</span></div>
+        <div class="sbh-cell sbh-img"><span id="storyColTitle">分镜首尾帧</span></div>
+        <div class="sbh-cell sbh-video"><span>视频</span></div>
+        <div class="sbh-cell sbh-ops"><span>操作</span></div>
+      </div>
+      <div class="story-board-body" id="shotsWrap"></div>
+      <div class="story-add-row" id="storyAddRow"><button class="add-shot-btn" id="btnAddShot">＋</button></div>
+    </div>
+
+    <!-- 右侧资产栏（常驻） -->
+    <aside class="char-panel" id="charPanel">
+      <div class="char-panel-head">
+        <div class="char-tabs">
+          <button class="char-tab active" data-tab="characters">
+            <span class="tab-ico">👤</span>角色
+            <span class="tab-badge warn">!</span>
+          </button>
+          <button class="char-tab" data-tab="scenes">
+            <span class="tab-ico">△</span>场景
+          </button>
+          <button class="char-tab" data-tab="props">
+            <span class="tab-ico">🎁</span>道具
+          </button>
+          <button class="char-tab" data-tab="others">
+            <span class="tab-ico">⋯</span>其他
+          </button>
+        </div>
+      </div>
+      <div class="char-panel-toolbar">
+        <button class="tool-btn active" id="btnBatchChar">角色批量</button>
+        <button class="tool-btn" id="btnBatchAll">全部批量</button>
+        <button class="tool-btn icon-only" title="设置">⚙</button>
+        <button class="tool-btn icon-only" title="资产">🗂</button>
+      </div>
+      <!-- 已出场区 -->
+      <div class="char-section">
+        <div class="char-section-head">
+          <span class="char-count" id="onStageCount">已出场 (0/0)</span>
+          <input type="text" class="char-search" id="charSearch" placeholder="搜索已出场…">
+        </div>
+        <div class="char-grid" id="onStageGrid"></div>
+      </div>
+      <!-- 未出场区 -->
+      <div class="char-section">
+        <div class="char-section-head">
+          <span class="char-count" id="offStageCount">未出场 (0/0)</span>
+          <button class="icon-btn-tiny" title="创建">＋</button>
+          <input type="text" class="char-search" id="charSearch2" placeholder="搜索角色…">
+        </div>
+        <div class="char-grid" id="offStageGrid"></div>
+        <div class="new-char-hint">新角色</div>
+        <div class="char-grid" id="newCharGrid"></div>
+      </div>
     </aside>
+  </div>
+
+  <!-- 编辑器浮动操作栏（左上角返回、顶栏功能） -->
+  <div class="ed-fab-bar">
+    <button class="fab-btn" id="btnBackEps" title="返回分集">◀</button>
+    <button class="fab-btn" id="btnToSetup" title="剧本分解">📝</button>
+    <button class="fab-btn" id="btnCompose" title="生成视频">🎬</button>
+  </div>
+  <div class="ed-status-bar">
+    <span class="save-badge" id="saveBadge">已保存</span>
+    <span class="presence-badge" id="presenceBadge"></span>
+    <select class="model-sel mini" id="selTextModel" title="文本模型"></select>
+    <select class="model-sel mini" id="selImageModel" title="图片模型"></select>
+    <select class="model-sel mini" id="selVideoModel" title="视频模型"></select>
+    <span class="ver-badge">480P</span>
+    <span class="ep-title-badge" id="edEpisodeName"></span>
   </div>
 </div>
 
@@ -174,7 +325,7 @@
   <div class="page-body" id="adminBody"></div>
 </div>
 
-<!-- 更新提示条（全局，任何页面都可见） -->
+<!-- 更新提示条 -->
 <div class="update-bar hidden" id="updateBar">
   <span id="updateBarText"></span>
   <div class="update-bar-actions">
@@ -182,8 +333,6 @@
     <button class="btn ghost small" id="btnDismissUpdate">稍后</button>
   </div>
 </div>
-
-<!-- 更新悬浮按钮 -->
 <button class="update-fab" id="btnCheckUpdate" title="检查更新">🔄</button>
 
 <!-- ============ 通用弹窗 ============ -->
