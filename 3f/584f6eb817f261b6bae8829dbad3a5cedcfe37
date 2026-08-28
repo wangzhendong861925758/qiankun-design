@@ -1,0 +1,50 @@
+renderer/index.html
+  s_64fd343f7aa474::t_f32e0a88c8e5a2 69-101,115-116,120-142,145,154-155
+renderer/app.js
+  s_64fd343f7aa474::t_17d14f599269cb 26-37
+  s_64fd343f7aa474::t_2d54eda0813087 571,573,576-579,589,592-593,608,610,612-615,617,619
+  s_64fd343f7aa474::t_7393f5b4426944 236,239,245,249,252-297
+  s_64fd343f7aa474::t_6198976e98dad6 1144-1152,1154-1155,1157-1158
+  s_64fd343f7aa474::t_585916b3d7e328 323,326,329,353-356,361-373,375-383
+  s_64fd343f7aa474::t_4a91181977aa76 825,833-837
+  s_64fd343f7aa474::t_cec2b8eb8417e6 60
+  s_64fd343f7aa474::t_cec3a6f02340c5 856,860
+  s_64fd343f7aa474::t_39a1964668753e 1153
+  s_64fd343f7aa474::t_4358e42cd77756 1167-1168
+preload.js
+  s_64fd343f7aa474::t_3ffea24ede3eb7 16
+main.js
+  s_64fd343f7aa474::t_07fbb56c73b2d0 100-174,183-186,208-218,223
+  s_64fd343f7aa474::t_320546fa41a7f7 77
+  s_64fd343f7aa474::t_1969645a45b69a 219-222
+  s_64fd343f7aa474::t_9b6faedf51c588 224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "3f584f6eb817f261b6bae8829dbad3a5cedcfe37",
+  "prompts": {},
+  "sessions": {
+    "s_64fd343f7aa474": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a8fcce628eecec0102cf03a",
+        "model": "glm-5.3__dev"
+      },
+      "human_author": "unknown",
+      "custom_attributes": {
+        "operation_id": "6a91011cd68774adddf51ebd",
+        "dedupe_key": "6a8fcce628eecec0102cf03a:6a91011cd68774adddf51ebd:afterEdit:590dfbd8",
+        "external_session_id": "6a8fcce628eecec0102cf03a",
+        "tool_type": "agent",
+        "source_scene": "unknown",
+        "edit_kind": "file_edit",
+        "client_type": "ide",
+        "session_id": "6a8fcce628eecec0102cf03a",
+        "runtime_client": "trae-tob-git-ai",
+        "tool_use_id": "6a91011cd68774adddf51ebd",
+        "tool_id": "Edit"
+      }
+    }
+  }
+}
