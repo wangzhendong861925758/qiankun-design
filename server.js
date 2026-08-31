@@ -265,7 +265,7 @@ function createServer(dataDir, port = 3210) {
   // 视频生成：提交任务 → 轮询 → 下载保存（支持首尾帧模式）
   app.post('/api/ai/video', async (req, res) => {
     if (!needUser(req, res)) return;
-    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration } = req.body || {};
+    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages } = req.body || {};
     const m = getModel(projectId, 'video', modelId);
     if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
     try {
@@ -273,9 +273,19 @@ function createServer(dataDir, port = 3210) {
       const body = { model: m.model, prompt: String(prompt || '').slice(0, 4000) };
       if (aspect === '16:9') body.aspect_ratio = '16:9'; else body.aspect_ratio = '9:16';
       const dur = Number(duration);
-      if (dur > 0) { body.duration = dur; body.duration_seconds = dur; }
-      if (firstFrame) body.image = firstFrame;      // 首帧参考
-      if (lastFrame) body.image_tail = lastFrame;   // 尾帧参考
+      if (dur > 0) { body.duration = dur; body.duration_seconds = dur; body.seconds = String(dur); }
+      // 多模态参考模式与首尾帧模式互斥：
+      // 有参考图（绑定的人物/场景/道具/分镜图）→ reference_image_urls 多图参考
+      // 否则 → 首帧 image / 尾帧 image_tail
+      const refs = Array.isArray(refImages) ? refImages.filter(u => typeof u === 'string' && /^https?:\/\//.test(u)).slice(0, 6) : [];
+      if (refs.length) {
+        body.reference_image_urls = refs;   // OpenAI 兼容多参考图字段
+        body.reference_images = refs;       // 部分网关（如 seedance2 满血版）使用此字段名
+        body.reference_mode = 'image_reference';
+      } else {
+        if (firstFrame) body.image = firstFrame;      // 首帧参考
+        if (lastFrame) { body.image_tail = lastFrame; body.last_frame_url = lastFrame; }   // 尾帧参考
+      }
       // 不同网关的视频端点不同：依次尝试 /videos/generations 与 /video/generations
       const endpoints = ['/videos/generations', '/video/generations'];
       let submit = null, epUsed = endpoints[0], lastErr = '';

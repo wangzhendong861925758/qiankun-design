@@ -948,6 +948,35 @@ function buildShotPrompt(s) {
   (A.props || []).filter(c => (s.propIds || []).includes(c.id)).forEach(c => parts.push('道具[' + c.name + ']'));
   return parts.join('；') + '。高质量动漫风格。';
 }
+// 收集分镜绑定资产的参考图（人物/场景/道具），供视频多模态参考模式使用
+function collectShotRefs(s) {
+  const A = S.project.assets || {};
+  const refs = [];
+  (A.characters || []).forEach(c => {
+    if ((s.characterIds || []).includes(c.id) && c.img) refs.push({ url: S.api.abs(c.img), kind: '人物', name: c.name, desc: c.desc || '' });
+  });
+  const sc = (A.scenes || []).find(c => c.id === s.sceneId);
+  if (sc && sc.img) refs.push({ url: S.api.abs(sc.img), kind: '场景', name: sc.name, desc: sc.desc || '' });
+  (A.props || []).forEach(c => {
+    if ((s.propIds || []).includes(c.id) && c.img) refs.push({ url: S.api.abs(c.img), kind: '道具', name: c.name, desc: c.desc || '' });
+  });
+  return refs.slice(0, 6);
+}
+// 视频提示词：用 @ImageN 显式绑定参考图（编号与 reference_image_urls 数组顺序严格一致）
+function buildVideoPrompt(s, refs) {
+  const parts = ['剧情：' + (s.text || '')];
+  if (s.dialogue) parts.push('台词：「' + s.dialogue + '」');
+  refs.forEach((r, i) => {
+    const n = i + 1;
+    const d = r.desc ? '（' + r.desc + '）' : '';
+    if (r.kind === '人物') parts.push('@Image' + n + ' 为人物「' + r.name + '」' + d + '，画面中人物形象必须与该参考图严格一致');
+    else if (r.kind === '场景') parts.push('@Image' + n + ' 为场景「' + r.name + '」' + d + '，画面环境背景必须与该参考图严格一致');
+    else if (r.kind === '道具') parts.push('@Image' + n + ' 为道具「' + r.name + '」' + d + '，道具外观必须与该参考图严格一致');
+    else parts.push('@Image' + n + ' 为分镜画面构图参考，整体构图与其保持一致');
+  });
+  parts.push('高质量动漫风格，画面连贯自然');
+  return parts.join('；') + '。';
+}
 async function genFrameImage(id, field) {
   const s = shotById(id); if (!s) return;
   if (!(S.project.models.image || []).length) return toast('未配置图片模型', 'err');
@@ -1043,7 +1072,7 @@ function videoDurationOptions(modelId) {
   const range = str.match(/(\d{1,2})\s*[-~到]\s*(\d{1,2})\s*s\b/);
   if (range) { for (let i = +range[1]; i <= +range[2] && i - range[1] <= 15; i++) opts.add(i); }
   (str.match(/\d{1,2}\s*s\b/g) || []).forEach(x => opts.add(parseInt(x, 10)));
-  if (!opts.size) [5, 10].forEach(x => opts.add(x));
+  if (!opts.size) { const a = []; for (let i = 4; i <= 15; i++) a.push(i); return a; }
   return [...opts].filter(n => n > 0 && n <= 60).sort((a, b) => a - b);
 }
 
@@ -1076,9 +1105,16 @@ function renderVideoPanel() {
   const err = (S.videoErr && S.videoErr.sid === s.id) ? S.videoErr : null;
   const url = s.videoUrl ? S.api.abs(s.videoUrl) : '';
   const flReady = (s.firstImg || s.storyboardImg) && s.lastImg;
+  const first = s.firstImg || s.storyboardImg;
 
   el.innerHTML = `
     <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
+    ${(() => {
+      const refs = collectShotRefs(s);
+      if (!refs.length && !first) return '<div class="vp-hint warn">⚠ 本镜未绑定人物/场景/道具参考图，将仅按剧本文字生成</div>';
+      const all = refs.map(r => `<span class="vp-ref-tag">${r.kind}·${esc(r.name)}</span>`).join('');
+      return `<div class="vp-sec"><div class="vp-sec-title">参考资产（严格按图生成）</div><div class="vp-refs">${all}${!isFL && first ? '<span class="vp-ref-tag">分镜图</span>' : ''}</div></div>`;
+    })()}
     ${url ? `
     <div class="vp-video-box">
       <video src="${esc(url)}" controls preload="metadata"></video>
@@ -1143,8 +1179,20 @@ async function doGenShotVideo(id, duration, isFL) {
     if (el2) el2.textContent = '已用时 ' + fmtElapsed(S.videoGen.startedAt);
   }, 1000);
   try {
-    const prompt = buildShotPrompt(s);
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration);
+    // 全能参考模式：收集绑定资产参考图（人物/场景/道具）+ 分镜图，多模态参考生成
+    // 首尾帧模式：仅用首帧+尾帧（两种模式互斥，不可混用）
+    let refUrls = [];
+    let prompt;
+    if (isFL) {
+      prompt = buildVideoPrompt(s, []);
+    } else {
+      const refs = collectShotRefs(s);
+      if (first) refs.push({ url: S.api.abs(first), kind: '分镜图', name: '分镜图', desc: '' });
+      const capped = refs.slice(0, 6);
+      refUrls = capped.map(r => r.url);
+      prompt = buildVideoPrompt(s, capped);
+    }
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls);
     clearInterval(S.videoGenTimer);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
     updShot(id, { videoUrl: r.url, duration: r.duration || duration });

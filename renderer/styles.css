@@ -366,6 +366,8 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .vp-err-msg { font-size: 11px; color: var(--text2); margin-top: 4px; word-break: break-all; }
 .vp-hint { font-size: 11px; color: var(--text3); line-height: 1.5; }
 .vp-hint.warn { color: var(--warn); }
+.vp-refs { display: flex; flex-wrap: wrap; gap: 4px; }
+.vp-ref-tag { font-size: 10px; color: var(--accent); background: rgba(59,130,246,.12); border: 1px solid rgba(59,130,246,.3); border-radius: 4px; padding: 2px 6px; }
 
 /* 编辑器顶部三大功能工具栏 */
 .ed-topbar {

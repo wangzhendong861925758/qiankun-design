@@ -29,7 +29,7 @@ class Api {
 
   aiText(projectId, modelId, messages, jsonMode) { return apiFetch(this.base, '/api/ai/text', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, messages, jsonMode }) }); }
   aiImage(projectId, modelId, prompt, aspect) { return apiFetch(this.base, '/api/ai/image', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, prompt, aspect }) }); }
-  aiVideo(projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration) { return apiFetch(this.base, '/api/ai/video', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration }) }); }
+  aiVideo(projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages) { return apiFetch(this.base, '/api/ai/video', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages }) }); }
 
   stats(payload) { return apiFetch(this.base, '/api/stats', { method: 'POST', headers: this.headers(), body: JSON.stringify(payload) }); }
 
