@@ -592,13 +592,15 @@ function refreshRowAssets(sid) {
 
 function renderCharPanel() {
   const kind = S.assetTab;
+  const panel = $('#charPanel');
+  const isVideo = kind === 'video';
+  if (panel) panel.classList.toggle('video-mode', isVideo);
+  $$('.char-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === kind));
+  if (isVideo) { renderVideoPanel(); return; }
   const A = S.project.assets || { characters: [], scenes: [], props: [], others: [] };
   const appeared = getAppeared(kind);
   const unused = getUnused(kind);
   const list = A[kind] || [];
-
-  // 更新标签
-  $$('.char-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === kind));
 
   const filter = S.charFilter.toLowerCase();
   const renderGrid = (items, isApp) => {
@@ -1029,8 +1031,10 @@ async function uploadShotFrame(id, field) {
 function videoDurationOptions(modelId) {
   const m = (S.project.models.video || []).find(x => x.id === modelId);
   const str = (m ? ((m.model || '') + ' ' + (m.name || '')) : '').toLowerCase();
-  // Seedance 2.0：固定枚举时长 4/5/6/8/10/12/15 秒，其他值会被API拒绝
-  if (/seedance\s*[-_.]?\s*2/.test(str) || /seedance.*2\.0/.test(str)) return [4, 5, 6, 8, 10, 12, 15];
+  // Seedance 2.0：即梦式时长范围 4–15 秒，中间逐秒可选
+  if (/seedance\s*[-_.]?\s*2/.test(str) || /seedance.*2\.0/.test(str)) {
+    const a = []; for (let i = 4; i <= 15; i++) a.push(i); return a;
+  }
   const opts = new Set();
   const range = str.match(/(\d{1,2})\s*[-~到]\s*(\d{1,2})\s*s\b/);
   if (range) { for (let i = +range[1]; i <= +range[2] && i - range[1] <= 15; i++) opts.add(i); }
@@ -1042,55 +1046,114 @@ function videoDurationOptions(modelId) {
 async function genShotVideo(id) {
   const s = shotById(id); if (!s) return;
   if (!S.sel.video) return toast('请先选择视频模型', 'err');
+  // 选中该分镜并切换右栏为视频生成面板
+  S.selectedShotId = id;
+  $$('.shot-row').forEach(r => r.classList.toggle('selected', r.dataset.id === id));
+  S.assetTab = 'video';
+  renderCharPanel();
+}
+
+// ---- 右栏视频生成面板 ----
+function fmtElapsed(ts) {
+  const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  return sec < 60 ? sec + ' 秒' : Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
+}
+function renderVideoPanel() {
+  const el = $('#videoPanel'); if (!el) return;
+  const s = S.selectedShotId ? shotById(S.selectedShotId) : null;
+  if (!s) { el.innerHTML = '<div class="vp-empty">👆 请先在左侧选择一个分镜</div>'; return; }
+  const idx = S.data.shots.findIndex(x => x.id === s.id) + 1;
   const model = (S.project.models.video || []).find(x => x.id === S.sel.video);
   const isFL = model && model.type === 'firstlast';
-  const first = s.firstImg || s.storyboardImg;
-  // 首尾帧模式：首帧+尾帧两张图必填；全能参考模式：分镜图可选
-  if (isFL && (!first || !s.lastImg)) {
-    return toast('首尾帧模式必须提供首帧与尾帧两张图片（可AI生成或上传）', 'err', 4000);
-  }
   const durs = videoDurationOptions(S.sel.video);
-  const cur = s.durSel || durs[0];
-  openModal('生成视频 · 第' + (S.data.shots.findIndex(x => x.id === id) + 1) + '镜', `
-    <div class="form-row"><label>视频时长 *（由模型「${esc(model ? model.name : '')}」自动识别支持的时长）</label>
-      <div class="dur-pills">
-        ${durs.map(d => `<button class="dur-pill${d === cur ? ' on' : ''}" data-dur="${d}">${d} 秒</button>`).join('')}
+  const min = durs[0], max = durs[durs.length - 1];
+  const cur = Math.min(Math.max(s.durSel || min, min), max);
+  const gen = (S.videoGen && S.videoGen.sid === s.id) ? S.videoGen : null;
+  const err = (S.videoErr && S.videoErr.sid === s.id) ? S.videoErr : null;
+  const url = s.videoUrl ? S.api.abs(s.videoUrl) : '';
+  const flReady = (s.firstImg || s.storyboardImg) && s.lastImg;
+
+  el.innerHTML = `
+    <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
+    ${url ? `
+    <div class="vp-video-box">
+      <video src="${esc(url)}" controls preload="metadata"></video>
+    </div>
+    <div class="vp-dl-row">
+      <a class="btn primary" href="${esc(url)}" download="shot-${idx}.mp4" target="_blank">⬇ 下载视频</a>
+    </div>` : ''}
+    <div class="vp-sec">
+      <div class="vp-sec-title">视频时长 <span class="vp-dur-val">${cur} 秒</span><span class="vp-dur-range">${min}–${max}s</span></div>
+      <div class="vp-dur-row">
+        <span class="vp-dur-min">${min}s</span>
+        <input type="range" id="vpDur" class="vp-slider" min="${min}" max="${max}" step="1" value="${cur}" ${gen ? 'disabled' : ''}>
+        <span class="vp-dur-max">${max}s</span>
       </div>
     </div>
-    ${isFL
-      ? '<p class="hint">首尾帧模式：将使用本镜<b>首帧 + 尾帧</b>两张图片生成。</p>'
-      : (first
-        ? '<p class="hint">全能参考模式：将综合分镜图与台词生成（分镜图可选，已提供）。</p>'
-        : '<p class="hint">全能参考模式：将按剧本描述生成（未提供分镜图，可先生成或上传以获得更稳定画面）。</p>')}
-    <div class="modal-foot-btns"><button class="btn ghost" id="gvCancel">取消</button><button class="btn primary" id="gvGo">🎬 开始生成</button></div>
-  `, true);
-  let chosen = cur;
-  $$('.dur-pill').forEach(p => p.onclick = () => {
-    chosen = +p.dataset.dur;
-    $$('.dur-pill').forEach(x => x.classList.toggle('on', x === p));
-    s.durSel = chosen;
-    updShot(id, { durSel: chosen }, false);
-  });
-  $('#gvCancel').onclick = closeModal;
-  $('#gvGo').onclick = async () => {
-    if (!chosen) return toast('请先选择视频时长', 'err');
-    closeModal();
-    await doGenShotVideo(id, chosen, isFL);
+    <div class="vp-sec">
+      <button class="btn primary vp-gen-btn" id="vpGen" ${gen ? 'disabled' : ''}>${gen ? '⏳ 生成中…' : (url ? '🔄 重新生成' : '🎬 生成视频')}</button>
+      ${model ? `<div class="vp-model">模型：${esc(model.name)}</div>` : '<div class="vp-model warn">未选择视频模型，请在底部状态栏选择</div>'}
+    </div>
+    ${gen ? `
+    <div class="vp-sec vp-progress-sec">
+      <div class="vp-progress-label"><span>视频生成中（${gen.duration} 秒）</span><span id="vpPct">${gen.pct || 0}%</span></div>
+      <div class="vp-progress"><div class="vp-progress-bar" id="vpBar" style="width:${gen.pct || 0}%"></div></div>
+      <div class="vp-elapsed" id="vpElapsed">已用时 ${fmtElapsed(gen.startedAt)}</div>
+    </div>` : ''}
+    ${err ? `<div class="vp-sec vp-error"><b>❌ 生成失败</b><div class="vp-err-msg">${esc(err.msg)}</div></div>` : ''}
+    ${isFL ? `<div class="vp-hint ${flReady ? '' : 'warn'}">${flReady ? '首尾帧模式：将使用本镜首帧 + 尾帧两张图片生成' : '⚠ 首尾帧模式：需先提供首帧与尾帧两张图片（可在分镜中 AI 生成或上传）'}</div>` : ''}
+  `;
+
+  const slider = el.querySelector('#vpDur');
+  if (slider) slider.oninput = () => {
+    const v = +slider.value;
+    s.durSel = v; updShot(s.id, { durSel: v }, false);
+    const lab = el.querySelector('.vp-dur-val'); if (lab) lab.textContent = v + ' 秒';
   };
+  const genBtn = el.querySelector('#vpGen');
+  if (genBtn) genBtn.onclick = () => doGenShotVideo(s.id, s.durSel || cur, isFL);
 }
 async function doGenShotVideo(id, duration, isFL) {
   const s = shotById(id); if (!s) return;
+  if (!S.sel.video) return toast('请先选择视频模型', 'err');
   const first = s.firstImg || s.storyboardImg;
+  // 首尾帧模式：首帧+尾帧两张图必填；全能参考模式：分镜图可选
+  if (isFL && (!first || !s.lastImg)) {
+    S.videoErr = { sid: id, msg: '首尾帧模式必须提供首帧与尾帧两张图片（可AI生成或上传）' };
+    renderVideoPanel();
+    return;
+  }
+  S.videoErr = null;
+  S.videoGen = { sid: id, duration, startedAt: Date.now(), pct: 0 };
+  renderVideoPanel();
+  // 进度条：按时长估算总耗时（生成通常1~5分钟），平滑推进至95%等待返回
+  const estMs = (90 + duration * 6) * 1000;
+  clearInterval(S.videoGenTimer);
+  S.videoGenTimer = setInterval(() => {
+    if (!S.videoGen || S.videoGen.sid !== id || (S.page !== 'editor' && S.page !== 'setup')) { clearInterval(S.videoGenTimer); return; }
+    const elapsed = Date.now() - S.videoGen.startedAt;
+    S.videoGen.pct = Math.min(95, Math.round(elapsed / estMs * 100));
+    const bar = $('#vpBar'), pct = $('#vpPct'), el2 = $('#vpElapsed');
+    if (bar) bar.style.width = S.videoGen.pct + '%';
+    if (pct) pct.textContent = S.videoGen.pct + '%';
+    if (el2) el2.textContent = '已用时 ' + fmtElapsed(S.videoGen.startedAt);
+  }, 1000);
   try {
-    toast('视频生成中（' + duration + '秒）…', '', 3000);
     const prompt = buildShotPrompt(s);
     const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration);
-    if (r.url) {
-      updShot(id, { videoUrl: r.url, duration: r.duration || duration });
-      renderShots();
-      toast('视频已生成', 'ok');
-    }
-  } catch (e) { toast('视频生成失败：' + (e.message || e), 'err', 4000); }
+    clearInterval(S.videoGenTimer);
+    if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
+    updShot(id, { videoUrl: r.url, duration: r.duration || duration });
+    S.videoGen = null; S.videoErr = null;
+    renderShots(); renderVideoPanel();
+    toast('视频已生成', 'ok');
+  } catch (e) {
+    clearInterval(S.videoGenTimer);
+    S.videoGen = null;
+    S.videoErr = { sid: id, msg: (e.message || String(e)) };
+    renderVideoPanel();
+    toast('视频生成失败：' + (e.message || e), 'err', 4000);
+  }
 }
 
 function initCompose() {}

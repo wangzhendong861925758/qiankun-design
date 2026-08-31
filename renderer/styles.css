@@ -333,6 +333,40 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .char-add.person { background: var(--bg3); border-style: solid; }
 .new-char-hint { font-size: 11px; color: var(--err); font-weight: 600; text-align: center; margin: 4px 0; }
 
+/* ---- 右栏视频生成面板 ---- */
+.char-panel.video-mode .char-panel-toolbar,
+.char-panel.video-mode .char-section { display: none; }
+.char-panel:not(.video-mode) .video-panel { display: none; }
+.video-panel { padding: 12px 12px 20px; display: flex; flex-direction: column; gap: 12px; }
+.vp-empty { color: var(--text3); font-size: 12px; text-align: center; padding: 40px 0; }
+.vp-shot-tag { font-size: 12px; font-weight: 700; color: var(--text); background: var(--bg3); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; text-align: center; }
+.vp-video-box { border-radius: 8px; overflow: hidden; border: 1px solid var(--line2); background: #000; }
+.vp-video-box video { display: block; width: 100%; max-height: 300px; }
+.vp-dl-row { display: flex; }
+.vp-dl-row .btn { flex: 1; text-align: center; text-decoration: none; font-size: 12px; padding: 7px 0; }
+.vp-sec { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.vp-sec-title { font-size: 12px; color: var(--text2); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.vp-dur-val { color: var(--accent); font-weight: 700; font-size: 14px; }
+.vp-dur-range { margin-left: auto; font-size: 10px; color: var(--text3); }
+.vp-dur-row { display: flex; align-items: center; gap: 8px; }
+.vp-dur-min, .vp-dur-max { font-size: 11px; color: var(--text3); flex-shrink: 0; }
+.vp-slider { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--bg5); outline: none; cursor: pointer; }
+.vp-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; cursor: pointer; }
+.vp-slider:disabled { opacity: .4; cursor: not-allowed; }
+.vp-gen-btn { width: 100%; font-size: 13px; padding: 9px 0; }
+.vp-model { font-size: 10px; color: var(--text3); text-align: center; margin-top: 6px; }
+.vp-model.warn { color: var(--warn); }
+.vp-progress-sec { border-color: rgba(59,130,246,.35); }
+.vp-progress-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--text2); margin-bottom: 6px; }
+.vp-progress-label span:last-child { color: var(--accent); font-weight: 700; }
+.vp-progress { height: 8px; border-radius: 4px; background: var(--bg5); overflow: hidden; }
+.vp-progress-bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 1s linear; }
+.vp-elapsed { font-size: 10px; color: var(--text3); text-align: center; margin-top: 6px; }
+.vp-error { border-color: rgba(248,81,73,.5); color: var(--err); font-size: 12px; }
+.vp-err-msg { font-size: 11px; color: var(--text2); margin-top: 4px; word-break: break-all; }
+.vp-hint { font-size: 11px; color: var(--text3); line-height: 1.5; }
+.vp-hint.warn { color: var(--warn); }
+
 /* 编辑器顶部三大功能工具栏 */
 .ed-topbar {
   display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 18px;
