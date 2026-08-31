@@ -210,6 +210,31 @@
 
 <!-- ============ 编辑器页（图4样式：九列+右侧资产栏） ============ -->
 <div class="page hidden" id="page-editor">
+  <!-- 顶部三大功能工具栏 -->
+  <div class="ed-topbar">
+    <button class="ed-tool-btn" id="btnBackEps" title="返回作品列表">
+      <span class="ed-tool-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+      </span>
+      <span class="ed-tool-txt">返回作品列表</span>
+    </button>
+    <button class="ed-tool-btn" id="btnToSetup" title="解析剧本 / 剧本分解">
+      <span class="ed-tool-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+      </span>
+      <span class="ed-tool-txt">解析剧本</span>
+    </button>
+    <button class="ed-tool-btn primary" id="btnCompose" title="生成视频">
+      <span class="ed-tool-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>
+      </span>
+      <span class="ed-tool-txt">生成视频</span>
+    </button>
+    <div class="ed-topbar-right">
+      <span class="save-badge" id="saveBadgeTop">已保存</span>
+      <span class="ep-title-badge" id="edEpisodeName"></span>
+    </div>
+  </div>
   <div class="editor-full">
     <!-- 九列分镜表格 -->
     <div class="story-board" id="storyBoard">
@@ -240,7 +265,6 @@
         <div class="sbh-cell sbh-ops"><span>操作</span></div>
       </div>
       <div class="story-board-body" id="shotsWrap"></div>
-      <div class="story-add-row" id="storyAddRow"><button class="add-shot-btn" id="btnAddShot">＋</button></div>
     </div>
 
     <!-- 右侧资产栏（常驻） -->
@@ -290,12 +314,7 @@
     </aside>
   </div>
 
-  <!-- 编辑器浮动操作栏（左上角返回、顶栏功能） -->
-  <div class="ed-fab-bar">
-    <button class="fab-btn" id="btnBackEps" title="返回分集">◀</button>
-    <button class="fab-btn" id="btnToSetup" title="剧本分解">📝</button>
-    <button class="fab-btn" id="btnCompose" title="生成视频">🎬</button>
-  </div>
+  <!-- 编辑器底部状态栏 -->
   <div class="ed-status-bar">
     <span class="save-badge" id="saveBadge">已保存</span>
     <span class="presence-badge" id="presenceBadge"></span>
@@ -303,7 +322,6 @@
     <select class="model-sel mini" id="selImageModel" title="图片模型"></select>
     <select class="model-sel mini" id="selVideoModel" title="视频模型"></select>
     <span class="ver-badge">480P</span>
-    <span class="ep-title-badge" id="edEpisodeName"></span>
   </div>
 </div>
 

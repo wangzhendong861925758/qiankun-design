@@ -231,7 +231,7 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .sbh-add-btn:hover { border-color: var(--ok); color: var(--ok); }
 
 /* 分镜行 */
-.story-board-body { flex: 1; overflow-y: auto; overflow-x: auto; min-width: fit-content; }
+.story-board-body { flex: 1; overflow-y: auto; overflow-x: auto; min-width: fit-content; padding-bottom: 40px; }
 .shot-row { display: flex; border-bottom: 1px solid var(--line); min-height: 160px; background: var(--bg2); }
 .shot-row:nth-child(even) { background: var(--bg); }
 .shot-row:hover { background: rgba(59,130,246,.04); }
@@ -282,7 +282,6 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .sr-ops-btn { width: 28px; height: 28px; background: var(--bg3); border: 1px solid var(--line); border-radius: 6px; color: var(--text3); font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .sr-ops-btn:hover { border-color: var(--err); color: var(--err); }
 .sr-ops-btn.pin { color: var(--err); border-color: var(--err); }
-.story-add-row { padding: 12px; text-align: center; flex-shrink: 0; }
 .add-shot-btn { background: none; border: 1.5px dashed var(--line2); color: var(--text3); padding: 8px 30px; border-radius: 8px; font-size: 14px; cursor: pointer; }
 .add-shot-btn:hover { border-color: var(--ok); color: var(--ok); }
 .story-empty-row td, .story-empty { color: var(--text3); text-align: center; padding: 40px; font-size: 13px; }
@@ -315,12 +314,42 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .char-add.person { background: var(--bg3); border-style: solid; }
 .new-char-hint { font-size: 11px; color: var(--err); font-weight: 600; text-align: center; margin: 4px 0; }
 
-/* 编辑器浮动栏 */
-.ed-fab-bar { position: fixed; top: 60px; left: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 20; }
-.fab-btn { width: 36px; height: 36px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 8px; color: var(--text2); font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,.3); }
-.fab-btn:hover { border-color: var(--accent); color: var(--text); }
+/* 编辑器顶部三大功能工具栏 */
+.ed-topbar {
+  display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 18px;
+  background: var(--bg2); border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.ed-tool-btn {
+  display: flex; align-items: center; gap: 8px; padding: 8px 18px;
+  background: var(--bg3); border: 1px solid var(--line2); border-radius: 9px;
+  color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all .15s;
+}
+.ed-tool-btn:hover { border-color: var(--accent); background: var(--bg4); }
+.ed-tool-btn.primary { background: var(--green-grad); border: none; color: #fff; }
+.ed-tool-btn.primary:hover { filter: brightness(1.1); }
+.ed-tool-ico { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.ed-tool-ico svg { width: 18px; height: 18px; }
+.ed-topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.ed-topbar-right .ep-title-badge { font-size: 12px; color: var(--text3); }
+
+/* 分镜下方的跟随插入条 */
+.shot-insert {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  height: 26px; background: var(--bg); border-bottom: 1px dashed var(--line);
+  cursor: pointer; opacity: .35; transition: all .15s; position: relative;
+}
+.shot-insert:hover { opacity: 1; background: var(--bg3); border-bottom-color: var(--ok); }
+.si-btn {
+  width: 18px; height: 18px; border-radius: 50%; border: 1.5px dashed var(--line2);
+  color: var(--text3); font-size: 12px; display: flex; align-items: center; justify-content: center;
+}
+.shot-insert:hover .si-btn { border-color: var(--ok); color: var(--ok); border-style: solid; }
+.si-txt { font-size: 11px; color: var(--text3); display: none; }
+.shot-insert:hover .si-txt { display: inline; color: var(--ok); }
+
+/* 编辑器底部状态栏 */
 .ed-status-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 32px; background: var(--bg2); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 11px; z-index: 20; }
-.ed-status-bar .ep-title-badge { margin-left: auto; font-size: 11px; color: var(--text3); }
 
 /* ===== 弹窗 ===== */
 .modal-mask { position: fixed; inset: 0; background: rgba(5,8,15,.7); backdrop-filter: blur(3px); z-index: 100; display: flex; align-items: center; justify-content: center; }
@@ -366,4 +395,11 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .admin-toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
 .mcfg-section { background: var(--bg3); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
 .mcfg-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.mcfg-title span { font-size: 11px; color: var(--text3); font-weight: 400; margin-left: 6px; }
+.mcfg-item { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.mi-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.mi-head .mi-name { flex: 1; }
+.form-row.half { margin-bottom: 6px; }
+.form-row.half input, .form-row.half select { width: 100%; }
+.op-cell { display: flex; gap: 6px; align-items: center; }
 .center { text-align: center; }

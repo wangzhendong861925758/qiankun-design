@@ -334,8 +334,9 @@ async function skipParse() {
   S.data.require = $('#setupRequire').value;
   emitOp({ kind: 'episode-meta', episodeId: S.episode.id, script: S.data.script, require: S.data.require });
   flushOps();
+  // 跳过解析且无分镜时，创建一个空白分镜供用户自行编辑
+  if (!S.data.shots.length) addShot('__first__');
   enterEditorPage();
-  if (!S.data.shots.length) toast('已跳过，点击「＋」添加分镜', '', 3000);
 }
 function renderModelSels() {
   const mk = (elId, list, key, label) => {
@@ -431,7 +432,10 @@ function renderShots() {
   const body = $('#shotsWrap');
   const A = S.project.assets || { characters: [], scenes: [], props: [], others: [], sfx: [] };
   if (!S.data.shots.length) {
-    body.innerHTML = `<div class="story-empty">暂无分镜<br><br>点击下方「＋」或返回剧本分解页开始创作</div>`;
+    body.innerHTML = `<div class="story-empty">
+      暂无分镜<br><br>可在上方「解析剧本」AI 拆解，或直接创建空白分镜自行编辑<br><br>
+      <button class="add-shot-btn" data-act="insert-after" data-sid="__first__">＋ 新建分镜</button>
+    </div>`;
     return;
   }
   body.innerHTML = S.data.shots.map((s, i) => {
@@ -503,7 +507,8 @@ function renderShots() {
         <button class="sr-ops-btn" data-act="up" data-sid="${s.id}">↑</button>
         <button class="sr-ops-btn" data-act="del" data-sid="${s.id}">✕</button>
       </div>
-    </div>`;
+    </div>
+    <div class="shot-insert" data-act="insert-after" data-sid="${s.id}" title="在此下方新建分镜"><span class="si-btn">＋</span><span class="si-txt">新建分镜</span></div>`;
   }).join('');
 }
 
@@ -588,7 +593,9 @@ function initShotEvents() {
       $$('.shot-row').forEach(r => r.classList.toggle('selected', r.dataset.id === S.selectedShotId));
       renderCharPanel();
     }
-    if (act === 'del' && s) {
+    if (act === 'insert-after') {
+      addShot(sid);
+    } else if (act === 'del' && s) {
       S.data.shots.splice(idx, 1);
       emitOp({ kind: 'shot-delete', episodeId: S.episode.id, shotId: sid });
       renderShots(); renderCharPanel();
@@ -706,9 +713,15 @@ function updShot(id, patch) {
   Object.assign(s, patch);
   emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
 }
-function addShot() {
+function addShot(afterSid) {
   const s = { id: uid(), text: '', dialogue: '', speaker: '', characterIds: [], sceneId: '', propIds: [], otherIds: [], sfxId: '', duration: 0, storyboardImg: '', firstImg: '', lastImg: '', voiceUrl: '', voice: 'zh-CN-XiaoxiaoNeural' };
-  S.data.shots.push(s);
+  if (afterSid && afterSid !== '__first__') {
+    const i = S.data.shots.findIndex(x => x.id === afterSid);
+    if (i >= 0) S.data.shots.splice(i + 1, 0, s);
+    else S.data.shots.push(s);
+  } else {
+    S.data.shots.push(s);
+  }
   emitOp({ kind: 'shot-add', episodeId: S.episode.id, shot: s });
   renderShots(); renderCharPanel();
   S.selectedShotId = s.id;
@@ -903,10 +916,12 @@ function localBackup() {
   window.mochi.backupSave('episode-' + S.episode.id, S.data);
 }
 function setSaveState(saved) {
-  const el = $('#saveBadge');
-  if (!el) return;
-  el.textContent = saved ? '已保存' : '保存中…';
-  el.classList.toggle('saving', !saved);
+  ['#saveBadge', '#saveBadgeTop'].forEach(sel => {
+    const el = $(sel);
+    if (!el) return;
+    el.textContent = saved ? '已保存' : '保存中…';
+    el.classList.toggle('saving', !saved);
+  });
 }
 async function fullSaveEpisode() {
   if (!S.episode || !S.data || !S.api) return;
@@ -974,25 +989,66 @@ async function loadAdmin() {
 function renderAdmin() {
   const b = $('#adminBody');
   if (!adminCache) { b.innerHTML = '<p class="hint">加载中…</p>'; return; }
-  if (adminTab === 'stats') b.innerHTML = '<div class="stat-cards"><div class="stat-card"><div class="sc-label">项目数</div><div class="sc-num">' + (adminCache.projects?.length || 0) + '</div></div></div>';
+  if (adminTab === 'stats') renderAdminStats(b);
   else if (adminTab === 'users') renderAdminUsers(b);
   else if (adminTab === 'projects') renderAdminProjects(b);
-  else b.innerHTML = '<p class="hint center">服务端管理</p>';
+  else renderAdminServer(b);
+}
+function renderAdminStats(b) {
+  const st = (adminCache.stats || []).filter(x => x.kind === 'video');
+  const groupIds = new Set(st.map(x => x.groupId));
+  const totalDur = st.reduce((s, x) => s + (x.durationSec || 0), 0);
+  const users = new Set(st.map(x => x.userId));
+  const byUser = {};
+  st.forEach(x => {
+    byUser[x.userName] = byUser[x.userName] || { count: 0, groups: new Set(), dur: 0 };
+    byUser[x.userName].count++; byUser[x.userName].groups.add(x.groupId); byUser[x.userName].dur += x.durationSec || 0;
+  });
+  const byShot = {};
+  st.forEach(x => {
+    const k = x.projectId + '|' + x.episodeId + '|' + x.shotIndex;
+    byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution };
+    byShot[k].count++; byShot[k].last = Math.max(byShot[k].last, x.ts); byShot[k].dur += x.durationSec || 0;
+  });
+  const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last).slice(0, 300);
+  b.innerHTML = `
+    <div class="stat-cards">
+      <div class="stat-card"><div class="sc-label">生成视频总数</div><div class="sc-num">${groupIds.size}</div></div>
+      <div class="stat-card"><div class="sc-label">分镜生成次数</div><div class="sc-num">${st.length}</div></div>
+      <div class="stat-card"><div class="sc-label">视频总时长</div><div class="sc-num">${fmtDur(totalDur)}</div></div>
+      <div class="stat-card"><div class="sc-label">参与用户数</div><div class="sc-num">${users.size}</div></div>
+      <div class="stat-card"><div class="sc-label">项目数</div><div class="sc-num">${(adminCache.projects || []).length}</div></div>
+    </div>
+    <div class="admin-section"><h3>按用户统计</h3>
+      <table class="admin-table"><tr><th>用户</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th></tr>
+      ${Object.entries(byUser).map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td></tr>`).join('') || '<tr><td colspan="4">暂无数据</td></tr>'}
+      </table></div>
+    <div class="admin-section"><h3>按分镜统计（最近300条）</h3>
+      <table class="admin-table"><tr><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
+      ${shotRows.map(r => `<tr><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="8">暂无数据，用户生成视频后此处自动统计</td></tr>'}
+      </table></div>`;
 }
 function renderAdminUsers(b) {
   const codes = adminCache.codes || [];
+  const users = adminCache.users || [];
   b.innerHTML = `
     <div class="admin-toolbar">
       <input id="cuName" placeholder="用户名称">
+      <input id="cuCode" placeholder="校验码（留空自动生成）" style="width:220px">
       <button class="btn primary" id="btnAddCode">＋ 添加校验码</button>
+      <button class="btn ghost" id="btnRefreshAdmin">刷新</button>
     </div>
-    <table class="admin-table"><tr><th>名称</th><th>校验码</th><th>创建时间</th><th>操作</th></tr>
-    ${codes.map(c => `<tr><td>${esc(c.name)}</td><td class="code-mono">${esc(c.code)}</td><td>${fmtTime(c.createdAt)}</td><td><button class="btn small danger" data-del="${c.id}">删除</button></td></tr>`).join('')}
+    <table class="admin-table"><tr><th>用户名称</th><th>校验码</th><th>创建时间</th><th>登录过</th><th>操作</th></tr>
+    ${codes.map(c => {
+      const used = users.some(u => u.codeId === c.id);
+      return `<tr><td>${esc(c.name)}</td><td class="code-mono">${esc(c.code)}</td><td>${fmtTime(c.createdAt)}</td><td>${used ? '✓' : '—'}</td><td><button class="btn small danger" data-del="${c.id}">删除</button></td></tr>`;
+    }).join('') || '<tr><td colspan="5">暂无校验码</td></tr>'}
     </table>`;
+  $('#btnRefreshAdmin').onclick = loadAdmin;
   $('#btnAddCode').onclick = async () => {
     const name = $('#cuName').value.trim();
     if (!name) return toast('请填写名称', 'err');
-    try { await S.api.adminCreateCode(name, ''); toast('已创建', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
+    try { await S.api.adminCreateCode(name, $('#cuCode').value.trim()); toast('已创建', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
   };
   b.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
     try { await S.api.adminDeleteCode(btn.dataset.del); toast('已删除', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
@@ -1000,23 +1056,133 @@ function renderAdminUsers(b) {
 }
 function renderAdminProjects(b) {
   const ps = adminCache.projects || [];
+  const eps = adminCache.episodes || [];
+  const modelCount = p => {
+    const m = p.models || {};
+    const t = (m.text || []).length, i2 = (m.image || []).length, v = (m.video || []).length;
+    return (t || i2 || v) ? `文${t} 图${i2} 视${v}` : '未配置';
+  };
   b.innerHTML = `
     <div class="admin-toolbar">
       <input id="npName" placeholder="项目名称">
       <button class="btn primary" id="btnAddProj">＋ 创建项目</button>
+      <button class="btn ghost" id="btnRefreshAdmin2">刷新</button>
     </div>
-    <table class="admin-table"><tr><th>项目</th><th>分集数</th><th>创建时间</th><th>操作</th></tr>
-    ${ps.map(p => `<tr><td>${esc(p.name)}</td><td>${(adminCache.episodes || []).filter(e => e.projectId === p.id).length}</td><td>${fmtTime(p.createdAt)}</td><td><button class="btn small danger" data-delp="${p.id}">删除</button></td></tr>`).join('')}
+    <p class="hint">项目与各项目的模型配置（文本/图片/视频，含 API 地址与 Key）由管理员在此管理。</p>
+    <table class="admin-table"><tr><th>项目</th><th>分集数</th><th>模型配置</th><th>创建时间</th><th>操作</th></tr>
+    ${ps.map(p => `<tr>
+      <td>${esc(p.name)}</td>
+      <td>${eps.filter(e => e.projectId === p.id).length}</td>
+      <td>${modelCount(p)}</td>
+      <td>${fmtTime(p.createdAt)}</td>
+      <td class="op-cell">
+        <button class="btn small" data-cfg="${p.id}">⚙ 编辑配置</button>
+        <button class="btn small danger" data-delp="${p.id}">删除</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="5">暂无项目</td></tr>'}
     </table>`;
   $('#btnAddProj').onclick = async () => {
     const name = $('#npName').value.trim();
     if (!name) return toast('请填写名称', 'err');
-    try { await S.api.adminCreateProject(name); toast('已创建', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
+    try { await S.api.adminCreateProject(name); toast('项目已创建', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
   };
+  $('#btnRefreshAdmin2').onclick = loadAdmin;
+  b.querySelectorAll('[data-cfg]').forEach(btn => btn.onclick = () => openModelCfg(btn.dataset.cfg));
   b.querySelectorAll('[data-delp]').forEach(btn => btn.onclick = async () => {
-    if (!confirm('删除项目将删除所有分集，确定？')) return;
+    if (!confirm('删除项目将同时删除其全部分集数据，确定？')) return;
     try { await S.api.adminDeleteProject(btn.dataset.delp); toast('已删除', 'ok'); loadAdmin(); } catch (e) { toast(e.message, 'err'); }
   });
+}
+function openModelCfg(pid) {
+  const p = adminCache.projects.find(x => x.id === pid);
+  if (!p) return;
+  p.models = p.models || { text: [], image: [], video: [] };
+  ['text', 'image', 'video'].forEach(k => { if (!Array.isArray(p.models[k])) p.models[k] = []; });
+  const section = (kind, title, sub) => `
+    <div class="mcfg-section">
+      <div class="mcfg-title">${title} <span>${sub}</span></div>
+      <div id="mcfg-${kind}"></div>
+      <button class="btn small" data-add="${kind}" style="margin-bottom:10px">＋ 添加${title.replace(/^[^\s]+\s*/, '')}</button>
+    </div>`;
+  openModal('⚙ 模型配置 · ' + p.name, `
+    <p class="hint">配置仅保存在服务端，API Key 不会下发给用户；用户只能看到模型名称并进行选择。视频模型可选「全能参考」（综合所有素材生成）或「首尾帧」（必须提供首帧/尾帧图）。</p>
+    ${section('text', '📝 文本模型', '负责剧本拆解、台词处理')}
+    ${section('image', '🖼 图片模型', '负责资产图与分镜图生成')}
+    ${section('video', '🎞 视频模型', '负责最终成片画面')}
+    <div class="modal-foot-btns"><button class="btn ghost" id="mcCancel">取消</button><button class="btn primary" id="mcSave">保存配置</button></div>
+  `, true);
+  const render = kind => {
+    const w = $('#mcfg-' + kind);
+    w.innerHTML = p.models[kind].map((m, i) => `
+      <div class="mcfg-item">
+        <div class="mi-head">
+          <input class="mi-name" data-k="${kind}" data-i="${i}" data-f="name" value="${esc(m.name)}" placeholder="显示名称（如：全能参考）">
+          ${kind === 'video' ? `<select data-k="${kind}" data-i="${i}" data-f="type" style="width:120px">
+            <option value="allref" ${m.type !== 'firstlast' ? 'selected' : ''}>全能参考</option>
+            <option value="firstlast" ${m.type === 'firstlast' ? 'selected' : ''}>首尾帧</option>
+          </select>` : ''}
+          <button class="btn small danger" data-rm="${kind}" data-i="${i}">✕</button>
+        </div>
+        <div class="form-row half"><label>API 地址 (Base URL)</label><input data-k="${kind}" data-i="${i}" data-f="baseUrl" value="${esc(m.baseUrl)}" placeholder="https://api.xxx.com/v1"></div>
+        <div class="form-row half"><label>API Key</label><input data-k="${kind}" data-i="${i}" data-f="apiKey" type="password" value="${esc(m.apiKey)}" placeholder="sk-…"></div>
+        <div class="form-row half"><label>模型名称</label><input data-k="${kind}" data-i="${i}" data-f="model" value="${esc(m.model)}" placeholder="model id"></div>
+      </div>`).join('') || '<p class="hint">暂未配置</p>';
+  };
+  ['text', 'image', 'video'].forEach(render);
+  $('#modalBody').querySelectorAll('[data-add]').forEach(btn => btn.onclick = () => {
+    p.models[btn.dataset.add].push({ id: uid(), name: '', baseUrl: '', apiKey: '', model: '', type: btn.dataset.add === 'video' ? 'allref' : '' });
+    render(btn.dataset.add);
+  });
+  $('#modalBody').querySelectorAll('[data-rm]').forEach(btn => btn.onclick = () => {
+    p.models[btn.dataset.rm].splice(parseInt(btn.dataset.i), 1);
+    render(btn.dataset.rm);
+  });
+  const mb = $('#modalBody');
+  mb.oninput = e => {
+    const t = e.target;
+    if (t.dataset.k !== undefined && t.dataset.f) p.models[t.dataset.k][parseInt(t.dataset.i)][t.dataset.f] = t.value;
+  };
+  mb.onchange = e => {
+    const t = e.target;
+    if (t.tagName === 'SELECT' && t.dataset.k !== undefined && t.dataset.f) p.models[t.dataset.k][parseInt(t.dataset.i)][t.dataset.f] = t.value;
+  };
+  $('#mcCancel').onclick = () => { closeModal(); loadAdmin(); };
+  $('#mcSave').onclick = async () => {
+    try {
+      ['text', 'image', 'video'].forEach(k => { p.models[k] = p.models[k].filter(m => m.name && m.baseUrl && m.model); });
+      await S.api.adminSaveModels(pid, p.models);
+      toast('模型配置已保存', 'ok');
+      closeModal(); loadAdmin();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+async function renderAdminServer(b) {
+  b.innerHTML = '<p class="hint">加载服务状态…</p>';
+  const st = await window.mochi.serverStatus();
+  const addr = (st.ips && st.ips.length ? st.ips : ['本机IP']).map(ip => 'http://' + ip + ':' + (st.port || 3210)).join(' 或 ');
+  b.innerHTML = `
+    <div class="admin-section"><h3>协作服务状态</h3>
+      <div class="stat-cards">
+        <div class="stat-card"><div class="sc-label">本机服务</div><div class="sc-num">${st.running ? '运行中' : '未启动'}</div></div>
+        <div class="stat-card"><div class="sc-label">端口</div><div class="sc-num">${st.port || 3210}</div></div>
+        <div class="stat-card"><div class="sc-label">当前服务器地址</div><div class="sc-num" style="font-size:15px">${esc(S.base)}</div></div>
+      </div>
+      <div class="admin-toolbar">
+        <input id="svPort" value="${st.port || 3210}" style="width:100px" placeholder="端口">
+        <button class="btn primary" id="btnSvStart">${st.running ? '重启服务' : '启动本机服务'}</button>
+        ${st.running ? '<button class="btn danger" id="btnSvStop">停止服务</button>' : ''}
+      </div>
+      ${st.running ? `<p class="hint">✅ 服务运行中。用户端登录页填入：<b>${esc(addr)}</b><br>数据目录：${esc(st.dataDir || '')}</p>` : '<p class="hint">启动后本机即成为协作服务器，其他设备通过局域网（或公网映射）地址连接。当前管理端连接的是 <b>' + esc(S.base) + '</b>。</p>'}
+      <p class="hint">⚠️ 跨设备访问需保证网络互通（同一局域网，或在路由器做端口映射 / 使用内网穿透）。Windows 防火墙首次会弹窗，请选择「允许」。</p>
+    </div>`;
+  $('#btnSvStart').onclick = async () => {
+    try {
+      const r = await window.mochi.serverStart(parseInt($('#svPort').value) || 3210);
+      if (r.ok) { toast('服务已启动（端口 ' + r.port + '）', 'ok'); renderAdminServer(b); }
+      else toast(r.error || '启动失败', 'err');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  const stop = $('#btnSvStop'); if (stop) stop.onclick = async () => { await window.mochi.serverStop(); toast('已停止'); renderAdminServer(b); };
 }
 
 function initUpdaterUI() {
@@ -1058,7 +1224,6 @@ function init() {
     flushOps(); await fullSaveEpisode(); S.collab.leave(); openProject(S.project.id);
   };
   $('#btnToSetup').onclick = () => { flushOps(); showSetup(); };
-  $('#btnAddShot').onclick = addShot;
   $('#btnCompose').onclick = composeVideo;
   $('#btnStartParse').onclick = parseScript;
   $('#btnSkipParse').onclick = skipParse;
