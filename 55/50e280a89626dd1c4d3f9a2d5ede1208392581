@@ -1,0 +1,39 @@
+renderer/app.js
+  s_64fd343f7aa474::t_a0bb316c8507d2 1034-1037
+  s_64fd343f7aa474::t_44843096ea3fb4 595-599
+  s_64fd343f7aa474::t_92ab510b43988b 1049-1065,1069-1090,1093-1111,1113-1114,1118,1120-1132,1134-1140,1144-1156
+  s_64fd343f7aa474::t_25b56cd6575998 1133
+renderer/styles.css
+  s_64fd343f7aa474::t_41ae4bff9e15ae 336-369
+renderer/index.html
+  s_64fd343f7aa474::t_85890d54df1052 319-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "5550e280a89626dd1c4d3f9a2d5ede1208392581",
+  "prompts": {},
+  "sessions": {
+    "s_64fd343f7aa474": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a8fcce628eecec0102cf03a",
+        "model": "glm-5.3__dev"
+      },
+      "human_author": "unknown",
+      "custom_attributes": {
+        "runtime_client": "trae-tob-git-ai",
+        "client_type": "ide",
+        "edit_kind": "file_edit",
+        "tool_use_id": "6a9507b1d8e3fc6fd36d70ba",
+        "external_session_id": "6a8fcce628eecec0102cf03a",
+        "operation_id": "6a9507b1d8e3fc6fd36d70ba",
+        "source_scene": "unknown",
+        "tool_id": "Edit",
+        "session_id": "6a8fcce628eecec0102cf03a",
+        "tool_type": "agent",
+        "dedupe_key": "6a8fcce628eecec0102cf03a:6a9507b1d8e3fc6fd36d70ba:afterEdit:590dfbd8"
+      }
+    }
+  }
+}
