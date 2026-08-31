@@ -276,24 +276,41 @@ function createServer(dataDir, port = 3210) {
       if (dur > 0) { body.duration = dur; body.duration_seconds = dur; }
       if (firstFrame) body.image = firstFrame;      // 首帧参考
       if (lastFrame) body.image_tail = lastFrame;   // 尾帧参考
-      const submit = await fetchTimeout(base + '/videos/generations',
-        { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
-      if (!submit.ok) throw new Error('提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300));
+      // 不同网关的视频端点不同：依次尝试 /videos/generations 与 /video/generations
+      const endpoints = ['/videos/generations', '/video/generations'];
+      let submit = null, epUsed = endpoints[0], lastErr = '';
+      for (const ep of endpoints) {
+        submit = await fetchTimeout(base + ep,
+          { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
+        if (submit.ok) { epUsed = ep; break; }
+        lastErr = '提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300);
+        if (submit.status !== 404 && submit.status !== 405) throw new Error(lastErr);
+      }
+      if (!submit || !submit.ok) throw new Error(lastErr);
       const sd = await submit.json();
-      let vid = sd.id || (sd.data && sd.data[0] && sd.data[0].id);
+      // 兼容多种网关返回结构提取任务ID
+      const pickVid = d => d.id || d.task_id || (d.data && d.data[0] && d.data[0].id) || (d.videos && d.videos[0] && d.videos[0].id) || '';
+      const pickUrl = d => {
+        const flat = d.url || d.video_url || (typeof d.output === 'string' ? d.output : '');
+        if (flat) return flat;
+        if (d.data && d.data[0] && (d.data[0].url || d.data[0].video_url)) return d.data[0].url || d.data[0].video_url;
+        if (d.videos && d.videos[0] && (d.videos[0].url || d.videos[0].video_url)) return d.videos[0].url || d.videos[0].video_url;
+        return '';
+      };
+      let vid = pickVid(sd);
       // 同步直接返回 url 的情况
-      let url = sd.url || (sd.data && sd.data[0] && sd.data[0].url);
+      let url = pickUrl(sd);
       if (!url && vid) {
         // 任务制：轮询（最长20分钟）
         for (let i = 0; i < 240; i++) {
           await new Promise(r => setTimeout(r, 5000));
-          const pr = await fetchTimeout(base + '/videos/generations/' + vid, { headers: aiHeaders(m) }, 120000);
+          const pr = await fetchTimeout(base + epUsed + '/' + vid, { headers: aiHeaders(m) }, 120000);
           if (!pr.ok) continue;
           const pd = await pr.json();
-          const st = pd.status || (pd.data && pd.data[0] && pd.data[0].status);
-          const u = pd.url || pd.video_url || (pd.data && pd.data[0] && (pd.data[0].url || pd.data[0].video_url));
+          const st = pd.status || pd.task_status || (pd.data && pd.data[0] && pd.data[0].status) || '';
+          const u = pickUrl(pd);
           if (u && String(st).toLowerCase() !== 'failed') { url = u; break; }
-          if (String(st).toLowerCase() === 'failed') throw new Error('视频生成失败');
+          if (String(st).toLowerCase() === 'failed') throw new Error('视频生成失败：' + (pd.error && (pd.error.message || pd.error) || '任务失败'));
         }
       }
       if (!url) throw new Error('视频生成超时或未返回地址');
