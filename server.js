@@ -271,9 +271,17 @@ function createServer(dataDir, port = 3210) {
       if (dur > 0) { body.duration = dur; body.duration_seconds = dur; }
       if (firstFrame) body.image = firstFrame;      // 首帧参考
       if (lastFrame) body.image_tail = lastFrame;   // 尾帧参考
-      const submit = await fetchTimeout(base + '/videos/generations',
-        { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
-      if (!submit.ok) throw new Error('提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300));
+      // 提交路径：Base URL 末尾未带版本号时自动回退尝试 /v1 前缀（兼容 nginx 网关 405）
+      const candidates = /\/v\d+[a-z]*$/.test(base) ? [base] : [base, base + '/v1'];
+      let submit = null, apiBase = candidates[0], lastErr = '';
+      for (const b of candidates) {
+        submit = await fetchTimeout(b + '/videos/generations',
+          { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
+        if (submit.ok) { apiBase = b; break; }
+        lastErr = '提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300);
+        if (submit.status !== 405 && submit.status !== 404) throw new Error(lastErr);
+      }
+      if (!submit || !submit.ok) throw new Error(lastErr + '（请检查模型 Base URL 是否为 OpenAI 兼容网关地址，通常以 /v1 结尾）');
       const sd = await submit.json();
       let vid = sd.id || (sd.data && sd.data[0] && sd.data[0].id);
       // 同步直接返回 url 的情况
@@ -282,7 +290,7 @@ function createServer(dataDir, port = 3210) {
         // 任务制：轮询（最长20分钟）
         for (let i = 0; i < 240; i++) {
           await new Promise(r => setTimeout(r, 5000));
-          const pr = await fetchTimeout(base + '/videos/generations/' + vid, { headers: aiHeaders(m) }, 120000);
+          const pr = await fetchTimeout(apiBase + '/videos/generations/' + vid, { headers: aiHeaders(m) }, 120000);
           if (!pr.ok) continue;
           const pd = await pr.json();
           const st = pd.status || (pd.data && pd.data[0] && pd.data[0].status);

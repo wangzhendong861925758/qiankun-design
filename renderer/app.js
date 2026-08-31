@@ -1022,6 +1022,8 @@ async function uploadShotFrame(id, field) {
 function videoDurationOptions(modelId) {
   const m = (S.project.models.video || []).find(x => x.id === modelId);
   const str = (m ? ((m.model || '') + ' ' + (m.name || '')) : '').toLowerCase();
+  // Seedance 2.0：固定枚举时长 4/5/6/8/10/12/15 秒，其他值会被API拒绝
+  if (/seedance\s*[-_.]?\s*2/.test(str) || /seedance.*2\.0/.test(str)) return [4, 5, 6, 8, 10, 12, 15];
   const opts = new Set();
   const range = str.match(/(\d{1,2})\s*[-~到]\s*(\d{1,2})\s*s\b/);
   if (range) { for (let i = +range[1]; i <= +range[2] && i - range[1] <= 15; i++) opts.add(i); }
