@@ -683,17 +683,21 @@ function initShotEvents() {
     }
   }, true);
   body.addEventListener('click', async e => {
+    // 任意点击分镜行即选中；点击“视频”列内容→右栏切换为视频详情，点击其余内容→切回资产
+    const row = e.target.closest('.shot-row');
+    if (row) {
+      S.selectedShotId = row.dataset.id;
+      $$('.shot-row').forEach(r => r.classList.toggle('selected', r.dataset.id === S.selectedShotId));
+      const inVideoCol = !!(e.target.closest('.sr-video, .video-slot, .gen-video-btn'));
+      if (inVideoCol) S.assetTab = 'video';
+      else if (S.assetTab === 'video') S.assetTab = 'characters';
+      renderCharPanel();
+    }
     const btn = e.target.closest('[data-act]'); if (!btn) return;
     const act = btn.dataset.act;
     const sid = btn.dataset.sid;
     const s = sid ? shotById(sid) : null;
     const idx = sid ? S.data.shots.findIndex(x => x.id === sid) : -1;
-    const row = btn.closest('.shot-row');
-    if (row) {
-      S.selectedShotId = row.dataset.id;
-      $$('.shot-row').forEach(r => r.classList.toggle('selected', r.dataset.id === S.selectedShotId));
-      renderCharPanel();
-    }
     if (act === 'insert-after') {
       addShot(sid);
     } else if (act === 'del' && s) {
