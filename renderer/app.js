@@ -288,7 +288,9 @@ async function openEpisode(id) {
     S.collab.connect(S.base, S.token);
     S.collab.join(S.project.id, S.episode.id);
     setSaveState(true);
-    showSetup();
+    // 首次进入（无分镜且无剧本）弹出解析剧本页；再次进入保留上次操作，直接进编辑器
+    if (!S.data.shots.length && !S.data.script) showSetup();
+    else enterEditorPage();
   } catch (e) { toast(e.message, 'err'); }
 }
 

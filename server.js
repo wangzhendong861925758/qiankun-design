@@ -215,6 +215,11 @@ function createServer(dataDir, port = 3210) {
     if (m.apiKey) h['Authorization'] = 'Bearer ' + m.apiKey;
     return h;
   }
+  // Base URL 归一化：末尾未带版本号时自动补 /v1（兼容 nginx 网关 405）
+  function apiBase(m) {
+    const b = m.baseUrl.replace(/\/+$/, '');
+    return /\/v\d+[a-z]*$/.test(b) ? b : b + '/v1';
+  }
   app.post('/api/ai/text', async (req, res) => {
     if (!needUser(req, res)) return;
     const { projectId, modelId, messages, jsonMode } = req.body || {};
@@ -223,7 +228,7 @@ function createServer(dataDir, port = 3210) {
     try {
       const body = { model: m.model, messages: messages || [], temperature: 0.3 };
       if (jsonMode) body.response_format = { type: 'json_object' };
-      const r = await fetchTimeout(m.baseUrl.replace(/\/+$/, '') + '/chat/completions',
+      const r = await fetchTimeout(apiBase(m) + '/chat/completions',
         { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
       if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()).slice(0, 300));
       const d = await r.json();
@@ -239,7 +244,7 @@ function createServer(dataDir, port = 3210) {
     if (!m) return res.status(400).json({ error: '该项目未配置图片模型，请联系管理员' });
     try {
       const body = { model: m.model, prompt: prompt, n: 1, size: aspect === '16:9' ? '1024x576' : '576x1024' };
-      const r = await fetchTimeout(m.baseUrl.replace(/\/+$/, '') + '/images/generations',
+      const r = await fetchTimeout(apiBase(m) + '/images/generations',
         { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 600000);
       if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()).slice(0, 300));
       const d = await r.json();
@@ -264,24 +269,16 @@ function createServer(dataDir, port = 3210) {
     const m = getModel(projectId, 'video', modelId);
     if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
     try {
-      const base = m.baseUrl.replace(/\/+$/, '');
+      const base = apiBase(m);
       const body = { model: m.model, prompt: String(prompt || '').slice(0, 4000) };
       if (aspect === '16:9') body.aspect_ratio = '16:9'; else body.aspect_ratio = '9:16';
       const dur = Number(duration);
       if (dur > 0) { body.duration = dur; body.duration_seconds = dur; }
       if (firstFrame) body.image = firstFrame;      // 首帧参考
       if (lastFrame) body.image_tail = lastFrame;   // 尾帧参考
-      // 提交路径：Base URL 末尾未带版本号时自动回退尝试 /v1 前缀（兼容 nginx 网关 405）
-      const candidates = /\/v\d+[a-z]*$/.test(base) ? [base] : [base, base + '/v1'];
-      let submit = null, apiBase = candidates[0], lastErr = '';
-      for (const b of candidates) {
-        submit = await fetchTimeout(b + '/videos/generations',
-          { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
-        if (submit.ok) { apiBase = b; break; }
-        lastErr = '提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300);
-        if (submit.status !== 405 && submit.status !== 404) throw new Error(lastErr);
-      }
-      if (!submit || !submit.ok) throw new Error(lastErr + '（请检查模型 Base URL 是否为 OpenAI 兼容网关地址，通常以 /v1 结尾）');
+      const submit = await fetchTimeout(base + '/videos/generations',
+        { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
+      if (!submit.ok) throw new Error('提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300));
       const sd = await submit.json();
       let vid = sd.id || (sd.data && sd.data[0] && sd.data[0].id);
       // 同步直接返回 url 的情况
@@ -290,7 +287,7 @@ function createServer(dataDir, port = 3210) {
         // 任务制：轮询（最长20分钟）
         for (let i = 0; i < 240; i++) {
           await new Promise(r => setTimeout(r, 5000));
-          const pr = await fetchTimeout(apiBase + '/videos/generations/' + vid, { headers: aiHeaders(m) }, 120000);
+          const pr = await fetchTimeout(base + '/videos/generations/' + vid, { headers: aiHeaders(m) }, 120000);
           if (!pr.ok) continue;
           const pd = await pr.json();
           const st = pd.status || (pd.data && pd.data[0] && pd.data[0].status);
