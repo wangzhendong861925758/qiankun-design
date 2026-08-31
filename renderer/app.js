@@ -1036,17 +1036,23 @@ async function genShotVideo(id) {
   const model = (S.project.models.video || []).find(x => x.id === S.sel.video);
   const isFL = model && model.type === 'firstlast';
   const first = s.firstImg || s.storyboardImg;
-  if (isFL && (!first || !s.lastImg)) return toast('首尾帧模型需先提供首帧与尾帧图（可AI生成或上传）', 'err', 4000);
-  if (!isFL && !first) return toast('请先生成或上传分镜图', 'err');
+  // 首尾帧模式：首帧+尾帧两张图必填；全能参考模式：分镜图可选
+  if (isFL && (!first || !s.lastImg)) {
+    return toast('首尾帧模式必须提供首帧与尾帧两张图片（可AI生成或上传）', 'err', 4000);
+  }
   const durs = videoDurationOptions(S.sel.video);
   const cur = s.durSel || durs[0];
   openModal('生成视频 · 第' + (S.data.shots.findIndex(x => x.id === id) + 1) + '镜', `
-    <div class="form-row"><label>视频时长（由模型「${esc(model ? model.name : '')}」自动识别支持的时长）</label>
+    <div class="form-row"><label>视频时长 *（由模型「${esc(model ? model.name : '')}」自动识别支持的时长）</label>
       <div class="dur-pills">
         ${durs.map(d => `<button class="dur-pill${d === cur ? ' on' : ''}" data-dur="${d}">${d} 秒</button>`).join('')}
       </div>
     </div>
-    ${isFL ? '<p class="hint">首尾帧模式：将使用本镜首帧与尾帧图生成。</p>' : '<p class="hint">全能参考模式：将综合分镜图与台词生成。</p>'}
+    ${isFL
+      ? '<p class="hint">首尾帧模式：将使用本镜<b>首帧 + 尾帧</b>两张图片生成。</p>'
+      : (first
+        ? '<p class="hint">全能参考模式：将综合分镜图与台词生成（分镜图可选，已提供）。</p>'
+        : '<p class="hint">全能参考模式：将按剧本描述生成（未提供分镜图，可先生成或上传以获得更稳定画面）。</p>')}
     <div class="modal-foot-btns"><button class="btn ghost" id="gvCancel">取消</button><button class="btn primary" id="gvGo">🎬 开始生成</button></div>
   `, true);
   let chosen = cur;
@@ -1058,6 +1064,7 @@ async function genShotVideo(id) {
   });
   $('#gvCancel').onclick = closeModal;
   $('#gvGo').onclick = async () => {
+    if (!chosen) return toast('请先选择视频时长', 'err');
     closeModal();
     await doGenShotVideo(id, chosen, isFL);
   };
@@ -1068,7 +1075,7 @@ async function doGenShotVideo(id, duration, isFL) {
   try {
     toast('视频生成中（' + duration + '秒）…', '', 3000);
     const prompt = buildShotPrompt(s);
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, S.api.abs(first), isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration);
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration);
     if (r.url) {
       updShot(id, { videoUrl: r.url, duration: r.duration || duration });
       renderShots();
