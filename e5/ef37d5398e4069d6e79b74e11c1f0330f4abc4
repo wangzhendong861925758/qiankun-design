@@ -1,0 +1,45 @@
+renderer/app.js
+  s_64fd343f7aa474::t_34d58183fabc6e 704-707
+  s_64fd343f7aa474::t_8a5a5b4b344e42 460-462
+  s_64fd343f7aa474::t_5ecb82ae88c594 648,652-664,668-675
+  s_64fd343f7aa474::t_78e9bd030c4e71 450,453-456,459,464,466,476-583
+  s_64fd343f7aa474::t_6a56b74008c52a 972-1032,1036-1067,1069,1071,1073
+server.js
+  s_64fd343f7aa474::t_56ed53d46bb849 263,270-271
+renderer/api.js
+  s_64fd343f7aa474::t_d3d52bfc38ba07 32
+renderer/styles.css
+  s_64fd343f7aa474::t_114a64f7933283 244-252
+  s_64fd343f7aa474::t_f96a70679e4139 281-292
+renderer/index.html
+  s_64fd343f7aa474::t_8d4900a033b8de 253-257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "e5ef37d5398e4069d6e79b74e11c1f0330f4abc4",
+  "prompts": {},
+  "sessions": {
+    "s_64fd343f7aa474": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a8fcce628eecec0102cf03a",
+        "model": "glm-5.3__dev"
+      },
+      "human_author": "unknown",
+      "custom_attributes": {
+        "runtime_client": "trae-tob-git-ai",
+        "client_type": "ide",
+        "tool_type": "agent",
+        "session_id": "6a8fcce628eecec0102cf03a",
+        "tool_use_id": "6a94e671d8e3fc6fd36d6f1f",
+        "source_scene": "unknown",
+        "edit_kind": "file_edit",
+        "operation_id": "6a94e671d8e3fc6fd36d6f1f",
+        "dedupe_key": "6a8fcce628eecec0102cf03a:6a94e671d8e3fc6fd36d6f1f:afterEdit:590dfbd8",
+        "external_session_id": "6a8fcce628eecec0102cf03a",
+        "tool_id": "Edit"
+      }
+    }
+  }
+}
