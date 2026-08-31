@@ -1,0 +1,38 @@
+server.js
+  s_64fd343f7aa474::t_645c93e7fb26ef 247
+  s_64fd343f7aa474::t_e88321930d54cf 218-222
+  s_64fd343f7aa474::t_3bc28888021a39 290
+  s_64fd343f7aa474::t_0c8695be2442b9 231
+  s_64fd343f7aa474::t_690ba2320e103c 272,279-281
+renderer/app.js
+  s_64fd343f7aa474::t_2a14d323e19216 291-293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "4bce47ed9970da96d3d6ccb3bfe580f711f516e0",
+  "prompts": {},
+  "sessions": {
+    "s_64fd343f7aa474": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a8fcce628eecec0102cf03a",
+        "model": "glm-5.3__dev"
+      },
+      "human_author": "unknown",
+      "custom_attributes": {
+        "dedupe_key": "6a8fcce628eecec0102cf03a:6a94ea14d8e3fc6fd36d6fca:afterEdit:54d4fb95",
+        "session_id": "6a8fcce628eecec0102cf03a",
+        "external_session_id": "6a8fcce628eecec0102cf03a",
+        "tool_type": "agent",
+        "edit_kind": "file_edit",
+        "client_type": "ide",
+        "tool_id": "Edit",
+        "source_scene": "unknown",
+        "operation_id": "6a94ea14d8e3fc6fd36d6fca",
+        "tool_use_id": "6a94ea14d8e3fc6fd36d6fca",
+        "runtime_client": "trae-tob-git-ai"
+      }
+    }
+  }
+}
