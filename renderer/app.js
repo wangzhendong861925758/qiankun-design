@@ -547,9 +547,10 @@ function scriptHighlightHTML(text, A) {
   items.sort((a, b) => b.name.length - a.name.length);
   const marks = [];
   items.forEach(it => {
-    const re = new RegExp(escapeReg(it.name), 'g');
+    // 匹配可选的 @ 前缀，一并纳入高亮框
+    const re = new RegExp('(@?)' + escapeReg(it.name), 'g');
     let m;
-    while ((m = re.exec(text)) !== null) marks.push({ s: m.index, e: m.index + it.name.length, cls: it.cls, id: it.id });
+    while ((m = re.exec(text)) !== null) marks.push({ s: m.index, e: m.index + m[0].length, cls: it.cls, id: it.id });
   });
   marks.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s));
   const kept = []; let pos = 0;
@@ -562,6 +563,20 @@ function scriptHighlightHTML(text, A) {
   });
   out += esc(text.slice(cur));
   return out;
+}
+// 剧本文本自动加 @ 提及（识别到资产名称且前面没有 @ 时自动补上）
+function autoAtAssets(s) {
+  const A = S.project.assets || {};
+  const names = [];
+  ['characters', 'scenes', 'props'].forEach(k => (A[k] || []).forEach(a => { if (a.name && a.name.length >= 2) names.push(a.name); }));
+  names.sort((a, b) => b.length - a.length);
+  let text = s.text || ''; let changed = false;
+  names.forEach(n => {
+    const re = new RegExp('(?<!@)' + escapeReg(n), 'g');
+    text = text.replace(re, m => { changed = true; return '@' + m; });
+  });
+  if (changed) s.text = text;
+  return changed;
 }
 // 根据剧本文本自动绑定资产（只增不减）
 function autoBindAssets(s) {
@@ -664,10 +679,18 @@ function initShotEvents() {
       const row = ta.closest('.shot-row');
       const hl = row && row.querySelector('.script-hl');
       if (hl) hl.innerHTML = scriptHighlightHTML(ta.value, S.project.assets || {});
-      // 防抖自动绑定资产（只增不减），局部刷新缩略图不打断输入
+      // 防抖自动@与自动绑定资产（只增不减），局部刷新缩略图不打断输入
       clearTimeout(autoBindTimers[id]);
       autoBindTimers[id] = setTimeout(() => {
         const s = shotById(id); if (!s) return;
+        if (autoAtAssets(s)) {
+          ta.value = s.text;
+          const hl = ta.closest('.shot-row') && ta.closest('.shot-row').querySelector('.script-hl');
+          if (hl) hl.innerHTML = scriptHighlightHTML(s.text, S.project.assets || {});
+          emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
+          ta.style.height = 'auto';
+          ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+        }
         if (autoBindAssets(s)) { refreshRowAssets(id); renderCharPanel(); }
       }, 600);
     }

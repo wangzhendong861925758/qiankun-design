@@ -242,14 +242,14 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .sr-no-num { width: 28px; height: 28px; border-radius: 50%; background: var(--bg4); border: 2px solid var(--line2); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--text); }
 .sr-lock { color: var(--text3); font-size: 12px; cursor: pointer; }
 .sr-cell.sr-script { width: 280px; gap: 4px; position: relative; }
-.script-hl { position: absolute; inset: 0; padding: 4px; font-size: 12.5px; line-height: 1.6; font-family: inherit; color: transparent; white-space: pre-wrap; word-break: break-word; overflow: hidden; pointer-events: none; z-index: 0; }
-.script-hl mark { color: transparent; border-radius: 3px; padding: 0 1px; }
+.script-hl { position: absolute; top: 8px; left: 8px; right: 15px; bottom: 8px; padding: 4px; font-size: 12.5px; line-height: 1.6; font-family: inherit; letter-spacing: normal; color: transparent; white-space: pre-wrap; word-break: break-word; overflow: hidden; pointer-events: none; z-index: 0; }
+.script-hl mark { color: transparent; border-radius: 3px; padding: 0; margin: 0; border: none; }
 .script-hl mark.hl-char { background: rgba(34,197,94,.35); box-shadow: inset 0 -1px 0 rgba(34,197,94,.9); }
 .script-hl mark.hl-scene { background: rgba(245,158,11,.32); box-shadow: inset 0 -1px 0 rgba(245,158,11,.9); }
 .script-hl mark.hl-prop { background: rgba(59,130,246,.32); box-shadow: inset 0 -1px 0 rgba(59,130,246,.9); }
 .script-hl-legend { display: flex; gap: 10px; font-size: 10.5px; color: var(--text3); padding: 4px 8px; }
 .slg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
-.sr-script textarea { position: relative; z-index: 1; width: 100%; background: transparent; border: none; padding: 4px; font-size: 12.5px; line-height: 1.6; color: var(--text); resize: none; flex: 1; min-height: 60px; }
+.sr-script textarea { position: relative; z-index: 1; width: 100%; background: transparent; border: none; padding: 4px; font-size: 12.5px; line-height: 1.6; font-family: inherit; letter-spacing: normal; color: var(--text); resize: none; flex: 1; min-height: 60px; scrollbar-gutter: stable; }
 .sr-script textarea:focus { background: var(--bg3); border-radius: 6px; }
 .sr-script .scene-tag { color: var(--warn); font-weight: 600; font-size: 11.5px; }
 .sr-script .char-tag { color: var(--ok); font-weight: 600; font-size: 11.5px; }
