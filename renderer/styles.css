@@ -241,8 +241,15 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .sr-cell.sr-no input[type="checkbox"] { margin-bottom: 4px; }
 .sr-no-num { width: 28px; height: 28px; border-radius: 50%; background: var(--bg4); border: 2px solid var(--line2); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--text); }
 .sr-lock { color: var(--text3); font-size: 12px; cursor: pointer; }
-.sr-cell.sr-script { width: 280px; gap: 4px; }
-.sr-script textarea { width: 100%; background: transparent; border: none; padding: 4px; font-size: 12.5px; line-height: 1.6; color: var(--text); resize: none; flex: 1; min-height: 60px; }
+.sr-cell.sr-script { width: 280px; gap: 4px; position: relative; }
+.script-hl { position: absolute; inset: 0; padding: 4px; font-size: 12.5px; line-height: 1.6; font-family: inherit; color: transparent; white-space: pre-wrap; word-break: break-word; overflow: hidden; pointer-events: none; z-index: 0; }
+.script-hl mark { color: transparent; border-radius: 3px; padding: 0 1px; }
+.script-hl mark.hl-char { background: rgba(34,197,94,.35); box-shadow: inset 0 -1px 0 rgba(34,197,94,.9); }
+.script-hl mark.hl-scene { background: rgba(245,158,11,.32); box-shadow: inset 0 -1px 0 rgba(245,158,11,.9); }
+.script-hl mark.hl-prop { background: rgba(59,130,246,.32); box-shadow: inset 0 -1px 0 rgba(59,130,246,.9); }
+.script-hl-legend { display: flex; gap: 10px; font-size: 10.5px; color: var(--text3); padding: 4px 8px; }
+.slg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.sr-script textarea { position: relative; z-index: 1; width: 100%; background: transparent; border: none; padding: 4px; font-size: 12.5px; line-height: 1.6; color: var(--text); resize: none; flex: 1; min-height: 60px; }
 .sr-script textarea:focus { background: var(--bg3); border-radius: 6px; }
 .sr-script .scene-tag { color: var(--warn); font-weight: 600; font-size: 11.5px; }
 .sr-script .char-tag { color: var(--ok); font-weight: 600; font-size: 11.5px; }
@@ -271,6 +278,18 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .frame-slot-sm img { width: 100%; height: 100%; object-fit: cover; }
 .frame-slot-sm .slot-add { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--text3); border: 1.5px dashed var(--line2); border-radius: 6px; }
 .frame-slot-sm .badge-cnt { position: absolute; bottom: 2px; right: 2px; background: rgba(0,0,0,.7); color: #fff; font-size: 9px; padding: 1px 5px; border-radius: 4px; }
+/* 空帧槽：AI生成 + 上传 双按钮 */
+.frame-slot-empty { display: flex; align-items: center; justify-content: center; gap: 4px; border: 1.5px dashed var(--line2); }
+.fs-act { width: 34px; height: 34px; border-radius: 8px; background: var(--bg4); border: 1px solid var(--line2); color: var(--text2); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.fs-act:hover { border-color: var(--accent); color: var(--text); }
+/* 已有帧图：左上角上传替换按钮 */
+.fs-upload { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.fs-upload:hover { background: var(--accent); }
+/* 时长选择pills */
+.dur-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.dur-pill { padding: 7px 18px; border-radius: 20px; background: var(--bg3); border: 1.5px solid var(--line2); color: var(--text2); font-size: 13px; cursor: pointer; font-family: inherit; }
+.dur-pill:hover { border-color: var(--accent); color: var(--text); }
+.dur-pill.on { border-color: var(--ok); background: rgba(34,197,94,.12); color: var(--ok); font-weight: 700; }
 .sr-cell.sr-video { width: 140px; gap: 4px; }
 .video-slot { flex: 1; border-radius: 6px; overflow: hidden; background: #000; border: 1px solid var(--line); position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer; min-height: 80px; }
 .video-slot video { width: 100%; height: 100%; object-fit: cover; }

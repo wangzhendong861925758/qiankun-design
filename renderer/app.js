@@ -439,47 +439,6 @@ function renderShots() {
     return;
   }
   body.innerHTML = S.data.shots.map((s, i) => {
-    const charList = (s.characterIds || []).map(id => A.characters.find(c => c.id === id)).filter(Boolean);
-    const scene = A.scenes.find(c => c.id === s.sceneId);
-    const propList = (s.propIds || []).map(id => A.props.find(c => c.id === id)).filter(Boolean);
-    const otherList = (s.otherIds || []).map(id => A.others.find(c => c.id === id)).filter(Boolean);
-    const charThumbs = charList.slice(0, 3).map(c => `
-      <div class="thumb-item" data-act="pick-char" data-sid="${s.id}" data-cid="${c.id}">
-        ${assetThumb(c)}
-      </div>
-    `).join('') + `<div class="thumb-item" data-act="add-char" data-sid="${s.id}"><div class="thumb-add">+</div>${charList.length ? `<div class="badge-cnt">${charList.length}</div>` : ''}</div>`;
-    const sceneThumb = scene ? `
-      <div class="thumb-item" data-act="pick-scene" data-sid="${s.id}" data-cid="${scene.id}">
-        ${assetThumb(scene)}
-      </div>
-    ` : `<div class="thumb-item" data-act="add-scene" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
-    const propThumbs = propList.slice(0, 3).map(p => `
-      <div class="thumb-item" data-act="pick-prop" data-sid="${s.id}" data-cid="${p.id}">
-        ${assetThumb(p)}
-      </div>
-    `).join('') + `<div class="thumb-item" data-act="add-prop" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
-    const otherThumbs = otherList.slice(0, 3).map(o => `
-      <div class="thumb-item" data-act="pick-other" data-sid="${s.id}" data-cid="${o.id}">
-        ${assetThumb(o)}
-      </div>
-    `).join('') + `<div class="thumb-item" data-act="add-other" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
-    const frameImg = s.storyboardImg || s.firstImg;
-    const frameSlot = frameImg ? `
-      <div class="frame-slot-sm" data-act="preview" data-url="${S.api.abs(frameImg)}">
-        <img src="${esc(S.api.abs(frameImg))}"><div class="badge-cnt">图</div>
-      </div>
-    ` : `<div class="frame-slot-sm" data-act="gen-img" data-sid="${s.id}"><div class="slot-add">✨</div></div>`;
-    const secondFrame = s.lastImg ? `
-      <div class="frame-slot-sm" data-act="preview" data-url="${S.api.abs(s.lastImg)}">
-        <img src="${esc(S.api.abs(s.lastImg))}"><div class="badge-cnt">尾</div>
-      </div>
-    ` : `<div class="frame-slot-sm" data-act="gen-last" data-sid="${s.id}"><div class="slot-add">+</div></div>`;
-    const videoSlot = s.videoUrl ? `
-      <div class="video-slot" data-act="play" data-url="${S.api.abs(s.videoUrl)}">
-        <video preload="none" src="${esc(S.api.abs(s.videoUrl))}"></video>
-        <div class="play-icon">▶</div><div class="badge-cnt">${fmtDur(s.duration)}</div>
-      </div>
-    ` : `<div class="video-slot" data-act="gen-video" data-sid="${s.id}"><div class="play-icon" style="opacity:.4">▶</div></div>`;
     return `
     <div class="shot-row" data-id="${s.id}">
       <div class="sr-cell sr-no">
@@ -488,19 +447,23 @@ function renderShots() {
         <div class="sr-lock">🔓</div>
       </div>
       <div class="sr-cell sr-script">
+        <div class="script-hl" data-hl="${s.id}">${scriptHighlightHTML(s.text || '', A)}</div>
         <textarea data-f="text" data-sid="${s.id}" placeholder="输入画面描述...">${esc(s.text)}</textarea>
       </div>
-      <div class="sr-cell sr-chars"><div class="thumb-grid">${charThumbs}</div></div>
-      <div class="sr-cell sr-scene"><div class="thumb-grid">${sceneThumb}</div></div>
-      <div class="sr-cell sr-props"><div class="thumb-grid">${propThumbs}</div></div>
-      <div class="sr-cell sr-others"><div class="thumb-grid">${otherThumbs}</div></div>
+      <div class="sr-cell sr-chars"><div class="thumb-grid">${charThumbsHTML(s, A)}</div></div>
+      <div class="sr-cell sr-scene"><div class="thumb-grid">${sceneThumbHTML(s, A)}</div></div>
+      <div class="sr-cell sr-props"><div class="thumb-grid">${propThumbsHTML(s, A)}</div></div>
+      <div class="sr-cell sr-others"><div class="thumb-grid">${otherThumbsHTML(s, A)}</div></div>
       <div class="sr-cell sr-aux">
         <button class="aux-btn" data-act="gen-img" data-sid="${s.id}">🖼 AI生图</button>
-        <button class="aux-btn" data-act="gen-voice" data-sid="${s.id}">🎙 配音${s.voiceUrl ? ' ✓' : ''}</button>
+        <button class="aux-btn" data-act="upload-frame" data-sid="${s.id}" data-field="storyboardImg">⬆ 上传分镜图</button>
+        <button class="aux-btn" data-act="gen-voice" data-sid="${s.id}">🎙 AI配音</button>
+        <button class="aux-btn" data-act="upload-voice" data-sid="${s.id}">🎵 上传配音</button>
+        ${s.voiceUrl ? `<button class="aux-btn" data-act="play-voice" data-url="${S.api.abs(s.voiceUrl)}">🔊 试听配音</button>` : ''}
       </div>
-      <div class="sr-cell sr-img"><div class="frame-imgs">${frameSlot}${secondFrame}</div></div>
+      <div class="sr-cell sr-img"><div class="frame-imgs">${frameSlotHTML(s, 'storyboardImg', '图', true)}${frameSlotHTML(s, 'lastImg', '尾', false)}</div></div>
       <div class="sr-cell sr-video">
-        ${videoSlot}
+        ${videoSlotHTML(s)}
         <button class="gen-video-btn" data-act="gen-video-btn" data-sid="${s.id}">${s.videoUrl ? '重新生成' : '生成本镜视频'}</button>
       </div>
       <div class="sr-cell sr-ops">
@@ -510,6 +473,114 @@ function renderShots() {
     </div>
     <div class="shot-insert" data-act="insert-after" data-sid="${s.id}" title="在此下方新建分镜"><span class="si-btn">＋</span><span class="si-txt">新建分镜</span></div>`;
   }).join('');
+  // 播放上传的配音
+  body.querySelectorAll('[data-act="play-voice"]').forEach(el => el.onclick = () => {
+    const u = el.dataset.url;
+    openModal('试听配音', `<audio src="${esc(u)}" controls autoplay style="width:100%"></audio>`, true);
+  });
+}
+
+// ---- 各单元格HTML（供整行渲染与局部刷新共用）----
+function charThumbsHTML(s, A) {
+  const list = (s.characterIds || []).map(id => (A.characters || []).find(c => c.id === id)).filter(Boolean);
+  return list.slice(0, 3).map(c => `
+    <div class="thumb-item" data-act="pick-char" data-sid="${s.id}" data-cid="${c.id}">${assetThumb(c)}</div>
+  `).join('') + `<div class="thumb-item" data-act="add-char" data-sid="${s.id}"><div class="thumb-add">+</div>${list.length ? `<div class="badge-cnt">${list.length}</div>` : ''}</div>`;
+}
+function sceneThumbHTML(s, A) {
+  const scene = (A.scenes || []).find(c => c.id === s.sceneId);
+  return scene ? `
+    <div class="thumb-item" data-act="pick-scene" data-sid="${s.id}" data-cid="${scene.id}">${assetThumb(scene)}</div>
+  ` : `<div class="thumb-item" data-act="add-scene" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
+}
+function propThumbsHTML(s, A) {
+  const list = (s.propIds || []).map(id => (A.props || []).find(c => c.id === id)).filter(Boolean);
+  return list.slice(0, 3).map(p => `
+    <div class="thumb-item" data-act="pick-prop" data-sid="${s.id}" data-cid="${p.id}">${assetThumb(p)}</div>
+  `).join('') + `<div class="thumb-item" data-act="add-prop" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
+}
+function otherThumbsHTML(s, A) {
+  const list = (s.otherIds || []).map(id => (A.others || []).find(c => c.id === id)).filter(Boolean);
+  return list.slice(0, 3).map(o => `
+    <div class="thumb-item" data-act="pick-other" data-sid="${s.id}" data-cid="${o.id}">${assetThumb(o)}</div>
+  `).join('') + `<div class="thumb-item" data-act="add-other" data-sid="${s.id}"><div class="thumb-add">+</div></div>`;
+}
+function frameSlotHTML(s, field, badge, canGen) {
+  const url = field === 'storyboardImg' ? (s.storyboardImg || s.firstImg) : s.lastImg;
+  if (url) return `
+    <div class="frame-slot-sm" data-act="preview" data-url="${S.api.abs(url)}">
+      <img src="${esc(S.api.abs(url))}"><div class="badge-cnt">${badge}</div>
+      <button class="fs-upload" data-act="upload-frame" data-sid="${s.id}" data-field="${field}" title="上传替换">⬆</button>
+    </div>`;
+  return `
+    <div class="frame-slot-sm frame-slot-empty">
+      ${canGen ? `<button class="fs-act" data-act="gen-img" data-sid="${s.id}" title="AI生成">✨</button>` : ''}
+      ${!canGen ? `<button class="fs-act" data-act="gen-last" data-sid="${s.id}" title="AI生成">✨</button>` : ''}
+      <button class="fs-act" data-act="upload-frame" data-sid="${s.id}" data-field="${field}" title="上传图片">⬆</button>
+    </div>`;
+}
+function videoSlotHTML(s) {
+  if (s.videoUrl) return `
+    <div class="video-slot" data-act="play" data-url="${S.api.abs(s.videoUrl)}">
+      <video preload="none" src="${esc(S.api.abs(s.videoUrl))}"></video>
+      <div class="play-icon">▶</div><div class="badge-cnt">${fmtDur(s.duration)}</div>
+    </div>`;
+  return `<div class="video-slot" data-act="gen-video" data-sid="${s.id}"><div class="play-icon" style="opacity:.4">▶</div></div>`;
+}
+
+// ---- 剧本文本资产高亮 ----
+function escapeReg(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function scriptHighlightHTML(text, A) {
+  if (!text) return '';
+  const items = [];
+  [['characters', 'char'], ['scenes', 'scene'], ['props', 'prop']].forEach(([k, cls]) => {
+    (A[k] || []).forEach(a => { if (a.name && a.name.length >= 2) items.push({ name: a.name, cls, id: a.id }); });
+  });
+  if (!items.length) return esc(text);
+  items.sort((a, b) => b.name.length - a.name.length);
+  const marks = [];
+  items.forEach(it => {
+    const re = new RegExp(escapeReg(it.name), 'g');
+    let m;
+    while ((m = re.exec(text)) !== null) marks.push({ s: m.index, e: m.index + it.name.length, cls: it.cls, id: it.id });
+  });
+  marks.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s));
+  const kept = []; let pos = 0;
+  marks.forEach(m => { if (m.s >= pos) { kept.push(m); pos = m.e; } });
+  let out = '', cur = 0;
+  kept.forEach(m => {
+    out += esc(text.slice(cur, m.s));
+    out += `<mark class="hl-${m.cls}" title="已自动绑定${m.cls === 'char' ? '出场人物' : m.cls === 'scene' ? '场景' : '道具'}">${esc(text.slice(m.s, m.e))}</mark>`;
+    cur = m.e;
+  });
+  out += esc(text.slice(cur));
+  return out;
+}
+// 根据剧本文本自动绑定资产（只增不减）
+function autoBindAssets(s) {
+  const A = S.project.assets || {}; const text = s.text || ''; let changed = false;
+  (A.characters || []).forEach(a => {
+    s.characterIds = s.characterIds || [];
+    if (a.name && a.name.length >= 2 && text.includes(a.name) && !s.characterIds.includes(a.id)) { s.characterIds.push(a.id); changed = true; }
+  });
+  (A.scenes || []).forEach(a => {
+    if (a.name && a.name.length >= 2 && text.includes(a.name) && !s.sceneId) { s.sceneId = a.id; changed = true; }
+  });
+  (A.props || []).forEach(a => {
+    s.propIds = s.propIds || [];
+    if (a.name && a.name.length >= 2 && text.includes(a.name) && !s.propIds.includes(a.id)) { s.propIds.push(a.id); changed = true; }
+  });
+  if (changed) emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
+  return changed;
+}
+// 局部刷新某分镜行的资产单元格（不打断输入焦点）
+function refreshRowAssets(sid) {
+  const row = document.querySelector(`.shot-row[data-id="${sid}"]`); if (!row) return;
+  const A = S.project.assets || {};
+  const s = shotById(sid); if (!s) return;
+  const cs = row.querySelector('.sr-chars .thumb-grid'); if (cs) cs.innerHTML = charThumbsHTML(s, A);
+  const sc = row.querySelector('.sr-scene .thumb-grid'); if (sc) sc.innerHTML = sceneThumbHTML(s, A);
+  const pr = row.querySelector('.sr-props .thumb-grid'); if (pr) pr.innerHTML = propThumbsHTML(s, A);
 }
 
 function renderCharPanel() {
@@ -574,13 +645,34 @@ function renderCharPanel() {
 
 function initShotEvents() {
   const body = $('#shotsWrap');
+  const autoBindTimers = {};
   body.addEventListener('input', e => {
     const ta = e.target.closest('textarea[data-f]'); if (!ta) return;
     const id = ta.dataset.sid, f = ta.dataset.f;
-    if (f === 'text') { updShot(id, { [f]: ta.value }, false); }
+    if (f === 'text') {
+      updShot(id, { [f]: ta.value }, false);
+      // 实时刷新高亮层
+      const row = ta.closest('.shot-row');
+      const hl = row && row.querySelector('.script-hl');
+      if (hl) hl.innerHTML = scriptHighlightHTML(ta.value, S.project.assets || {});
+      // 防抖自动绑定资产（只增不减），局部刷新缩略图不打断输入
+      clearTimeout(autoBindTimers[id]);
+      autoBindTimers[id] = setTimeout(() => {
+        const s = shotById(id); if (!s) return;
+        if (autoBindAssets(s)) { refreshRowAssets(id); renderCharPanel(); }
+      }, 600);
+    }
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
   });
+  // 高亮层与文本框滚动同步
+  body.addEventListener('scroll', e => {
+    const ta = e.target;
+    if (ta.matches && ta.matches('textarea[data-f="text"]')) {
+      const hl = ta.closest('.shot-row') && ta.closest('.shot-row').querySelector('.script-hl');
+      if (hl) hl.scrollTop = ta.scrollTop;
+    }
+  }, true);
   body.addEventListener('click', async e => {
     const btn = e.target.closest('[data-act]'); if (!btn) return;
     const act = btn.dataset.act;
@@ -609,6 +701,10 @@ function initShotEvents() {
       await genFrameImage(sid, 'lastImg');
     } else if (act === 'gen-voice' && s) {
       await genShotVoice(sid);
+    } else if (act === 'upload-voice' && s) {
+      await uploadShotVoice(sid);
+    } else if (act === 'upload-frame' && s) {
+      await uploadShotFrame(sid, btn.dataset.field || 'storyboardImg');
     } else if ((act === 'gen-video' || act === 'gen-video-btn') && s) {
       await genShotVideo(sid);
     } else if (act === 'preview') {
@@ -873,17 +969,108 @@ async function genShotVoice(id) {
   } catch (e) { toast('配音失败：' + (e.message || e), 'err'); }
 }
 
+// ---- 文件选择与上传 ----
+function pickFile(accept) {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = accept;
+    inp.onchange = () => resolve(inp.files[0] || null);
+    inp.click();
+  });
+}
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+async function uploadFile(file, namePrefix) {
+  const ext = (file.name.match(/\.[a-z0-9]+$/i) || ['.bin'])[0].toLowerCase();
+  const b64 = await fileToBase64(file);
+  return S.api.upload(namePrefix + ext, b64);
+}
+// 自由上传配音（不限于绑定的角色音色）
+async function uploadShotVoice(id) {
+  const s = shotById(id); if (!s) return;
+  const f = await pickFile('audio/*');
+  if (!f) return;
+  try {
+    toast('上传配音中…');
+    const up = await uploadFile(f, 'voice-' + id);
+    updShot(id, { voiceUrl: up.url, voice: 'custom' });
+    renderShots();
+    toast('配音已上传', 'ok');
+  } catch (e) { toast('上传失败：' + (e.message || e), 'err'); }
+}
+// 自行上传分镜首帧/尾帧图
+async function uploadShotFrame(id, field) {
+  const s = shotById(id); if (!s) return;
+  const f = await pickFile('image/*');
+  if (!f) return;
+  try {
+    toast('上传图片中…');
+    const up = await uploadFile(f, 'frame-' + id + '-' + field);
+    updShot(id, { [field]: up.url });
+    renderShots();
+    toast('图片已上传', 'ok');
+  } catch (e) { toast('上传失败：' + (e.message || e), 'err'); }
+}
+
+// ---- 视频时长：按模型名称自动识别可选项 ----
+function videoDurationOptions(modelId) {
+  const m = (S.project.models.video || []).find(x => x.id === modelId);
+  const str = (m ? ((m.model || '') + ' ' + (m.name || '')) : '').toLowerCase();
+  const opts = new Set();
+  const range = str.match(/(\d{1,2})\s*[-~到]\s*(\d{1,2})\s*s\b/);
+  if (range) { for (let i = +range[1]; i <= +range[2] && i - range[1] <= 15; i++) opts.add(i); }
+  (str.match(/\d{1,2}\s*s\b/g) || []).forEach(x => opts.add(parseInt(x, 10)));
+  if (!opts.size) [5, 10].forEach(x => opts.add(x));
+  return [...opts].filter(n => n > 0 && n <= 60).sort((a, b) => a - b);
+}
+
 async function genShotVideo(id) {
   const s = shotById(id); if (!s) return;
   if (!S.sel.video) return toast('请先选择视频模型', 'err');
-  const refImg = s.firstImg || s.storyboardImg;
-  if (!refImg) return toast('请先生成分镜图', 'err');
+  const model = (S.project.models.video || []).find(x => x.id === S.sel.video);
+  const isFL = model && model.type === 'firstlast';
+  const first = s.firstImg || s.storyboardImg;
+  if (isFL && (!first || !s.lastImg)) return toast('首尾帧模型需先提供首帧与尾帧图（可AI生成或上传）', 'err', 4000);
+  if (!isFL && !first) return toast('请先生成或上传分镜图', 'err');
+  const durs = videoDurationOptions(S.sel.video);
+  const cur = s.durSel || durs[0];
+  openModal('生成视频 · 第' + (S.data.shots.findIndex(x => x.id === id) + 1) + '镜', `
+    <div class="form-row"><label>视频时长（由模型「${esc(model ? model.name : '')}」自动识别支持的时长）</label>
+      <div class="dur-pills">
+        ${durs.map(d => `<button class="dur-pill${d === cur ? ' on' : ''}" data-dur="${d}">${d} 秒</button>`).join('')}
+      </div>
+    </div>
+    ${isFL ? '<p class="hint">首尾帧模式：将使用本镜首帧与尾帧图生成。</p>' : '<p class="hint">全能参考模式：将综合分镜图与台词生成。</p>'}
+    <div class="modal-foot-btns"><button class="btn ghost" id="gvCancel">取消</button><button class="btn primary" id="gvGo">🎬 开始生成</button></div>
+  `, true);
+  let chosen = cur;
+  $$('.dur-pill').forEach(p => p.onclick = () => {
+    chosen = +p.dataset.dur;
+    $$('.dur-pill').forEach(x => x.classList.toggle('on', x === p));
+    s.durSel = chosen;
+    updShot(id, { durSel: chosen }, false);
+  });
+  $('#gvCancel').onclick = closeModal;
+  $('#gvGo').onclick = async () => {
+    closeModal();
+    await doGenShotVideo(id, chosen, isFL);
+  };
+}
+async function doGenShotVideo(id, duration, isFL) {
+  const s = shotById(id); if (!s) return;
+  const first = s.firstImg || s.storyboardImg;
   try {
-    toast('视频生成中…');
+    toast('视频生成中（' + duration + '秒）…', '', 3000);
     const prompt = buildShotPrompt(s);
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.api.abs(refImg), S.data.aspect);
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, S.api.abs(first), isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration);
     if (r.url) {
-      updShot(id, { videoUrl: r.url, duration: r.duration || 3 });
+      updShot(id, { videoUrl: r.url, duration: r.duration || duration });
       renderShots();
       toast('视频已生成', 'ok');
     }

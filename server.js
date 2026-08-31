@@ -260,13 +260,15 @@ function createServer(dataDir, port = 3210) {
   // 视频生成：提交任务 → 轮询 → 下载保存（支持首尾帧模式）
   app.post('/api/ai/video', async (req, res) => {
     if (!needUser(req, res)) return;
-    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame } = req.body || {};
+    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration } = req.body || {};
     const m = getModel(projectId, 'video', modelId);
     if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
     try {
       const base = m.baseUrl.replace(/\/+$/, '');
       const body = { model: m.model, prompt: String(prompt || '').slice(0, 4000) };
       if (aspect === '16:9') body.aspect_ratio = '16:9'; else body.aspect_ratio = '9:16';
+      const dur = Number(duration);
+      if (dur > 0) { body.duration = dur; body.duration_seconds = dur; }
       if (firstFrame) body.image = firstFrame;      // 首帧参考
       if (lastFrame) body.image_tail = lastFrame;   // 尾帧参考
       const submit = await fetchTimeout(base + '/videos/generations',
