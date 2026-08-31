@@ -281,6 +281,11 @@ async function openEpisode(id) {
     S.episode = r.episode;
     S.data = Object.assign({ aspect: '16:9', style: '国漫风', script: '', require: '', shots: [] }, r.data);
     if (!Array.isArray(S.data.shots)) S.data.shots = [];
+    // 从服务端刷新项目共享资产（其他成员添加的资产进入时即可见）
+    try {
+      const pr = await S.api.project(S.project.id);
+      if (pr.project && pr.project.assets) S.project.assets = pr.project.assets;
+    } catch (e2) { }
     $('#edEpisodeName').textContent = S.project.name + ' · ' + S.episode.name;
     const saved = JSON.parse(localStorage.getItem('qk_sel_' + S.project.id) || '{}');
     S.sel = { text: saved.text || '', image: saved.image || '', video: saved.video || '' };
@@ -1106,6 +1111,11 @@ function emitOp(op) {
 function flushOps() {
   const ops = opQueue.splice(0);
   ops.forEach(op => S.collab.sendOp(op));
+  // 资产更新走可靠HTTP通道持久化（WS断开时ops会被丢弃），确保项目资产留存并向全员共享
+  const lastAssets = [...ops].reverse().find(op => op.kind === 'assets-update');
+  if (lastAssets && S.project && S.api) {
+    S.api.assetsSave(S.project.id, lastAssets.assets).catch(() => { });
+  }
   if (ops.length) setSaveState(true);
   localBackup();
 }

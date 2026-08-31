@@ -40,6 +40,8 @@ class Api {
   adminSaveModels(pid, models) { return apiFetch(this.base, '/api/admin/projects/' + pid + '/models', { method: 'PUT', headers: this.headers(), body: JSON.stringify({ models }) }); }
   adminDeleteProject(pid) { return apiFetch(this.base, '/api/admin/projects/' + pid, { method: 'DELETE', headers: this.headers() }); }
 
+  assetsSave(pid, assets) { return apiFetch(this.base, '/api/projects/' + pid + '/assets/save', { method: 'POST', headers: this.headers(), body: JSON.stringify({ assets }) }); }
+
   abs(u) { return u ? this.base.replace(/\/+$/, '') + u : ''; }
 }
 
