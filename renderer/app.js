@@ -970,7 +970,7 @@ async function genShotVoice(id) {
 }
 
 // ---- 文件选择与上传 ----
-function pickFile(accept) {
+function pickLocalFile(accept) {
   return new Promise(resolve => {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.accept = accept;
@@ -1007,7 +1007,7 @@ async function uploadShotVoice(id) {
 // 自行上传分镜首帧/尾帧图
 async function uploadShotFrame(id, field) {
   const s = shotById(id); if (!s) return;
-  const f = await pickFile('image/*');
+  const f = await pickLocalFile('image/*');
   if (!f) return;
   try {
     toast('上传图片中…');
