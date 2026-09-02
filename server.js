@@ -15,7 +15,7 @@ const ADMINS = [
   { username: 'zhaojiawei', password: '123456', name: '管理员-赵' }
 ];
 
-const APP_VERSION = '2.0.2';
+const APP_VERSION = '2.0.7';
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function nowTs() { return Date.now(); }
 function genCode() { // 生成8位校验码
@@ -290,13 +290,11 @@ function createServer(dataDir, port = 3210) {
       res.json({ ok: true, url: '/assets/' + fn });
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
-  // 视频生成：提交任务 → 轮询 → 下载保存（支持首尾帧模式）
-  app.post('/api/ai/video', async (req, res) => {
-    if (!needUser(req, res)) return;
-    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages, audio } = req.body || {};
-    const m = getModel(projectId, 'video', modelId);
-    if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
-    try {
+  // 视频生成核心流程：提交任务 → 轮询 → 下载保存（支持首尾帧模式）
+  // 同步接口（/api/ai/video）与后台任务接口（/api/ai/video/task）共用
+  async function runVideoGen(m, params) {
+    const { prompt, aspect, firstFrame, lastFrame, duration, refImages, audio } = params || {};
+    {
       const base = apiBase(m);
       const dur = Math.max(4, Math.min(15, Number(duration) || 5));   // Seedance 2.0 时长范围 [4,15] 秒
       const ratio = aspect === '9:16' ? '9:16' : '16:9';               // 方舟宽高比字段为 ratio
@@ -385,8 +383,120 @@ function createServer(dataDir, port = 3210) {
       const ext = (path.extname(url.split('?')[0]) || '.mp4').toLowerCase();
       const fn = uid() + (['.mp4', '.webm', '.mov'].includes(ext) ? ext : '.mp4');
       fs.writeFileSync(path.join(dataDir, 'assets', fn), Buffer.from(await vr.arrayBuffer()));
-      res.json({ ok: true, url: '/assets/' + fn });
+      return { url: '/assets/' + fn, duration: dur };
+    }
+  }
+  // 同步生成接口（旧版客户端兼容；Electron 合成等内部调用也走此接口，等待结果返回）
+  app.post('/api/ai/video', async (req, res) => {
+    if (!needUser(req, res)) return;
+    const { projectId, modelId } = req.body || {};
+    const m = getModel(projectId, 'video', modelId);
+    if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
+    try {
+      const result = await runVideoGen(m, req.body || {});
+      res.json({ ok: true, url: result.url, duration: result.duration });
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  });
+
+  // ---------- 视频生成后台任务（v2.0.7+）：生成与页面/客户端彻底解耦 ----------
+  // 提交后立即返回 taskId，服务端后台执行；用户退出编辑页甚至退出软件都不影响生成。
+  // 成功后服务端直接落地：分集数据更新 + WS 广播全员 + 生成统计写入（不依赖任何客户端在线）。
+  const videoTasks = new Map();   // taskId -> 任务对象（内存态；完成态保留30分钟供查询后清理）
+  function taskPublic(t) {
+    return { id: t.id, projectId: t.projectId, episodeId: t.episodeId, shotId: t.shotId,
+      status: t.status, pct: t.pct, startedAt: t.startedAt, duration: t.duration, url: t.url, error: t.error,
+      by: t.by };
+  }
+  // 任务成功落地：更新分集数据 + 广播 + 写统计（服务端完成，跨设备数据留存的本体）
+  function finishVideoTask(task, result) {
+    try {
+      if (task.episodeId && task.shotId) {
+        const ep = loadEpisode(task.episodeId);
+        if (ep) {
+          const i = ep.shots.findIndex(s => s.id === task.shotId);
+          if (i >= 0) {
+            const shot = ep.shots[i];
+            const videos = (shot.videos || []).slice();
+            videos.unshift({ url: result.url, duration: result.duration, ts: nowTs() });
+            shot.videoUrl = result.url; shot.duration = result.duration; shot.videos = videos;
+            ep.shots[i] = shot;
+            // 同步立即写盘（不用防抖）：多个并发任务几乎同时完成时，防抖会基于旧副本互相覆盖导致丢数据
+            fs.writeFileSync(epFile(task.episodeId), JSON.stringify(ep, null, 2));
+            touchEpisode(task.episodeId, task.by.name);
+            // 广播给同项目所有在线客户端；op 带 genTaskId 标记，客户端据此清除本地任务态并提示
+            broadcastRoom(task.projectId, { t: 'op', op: { kind: 'shot-update', episodeId: task.episodeId, shot, genTaskId: task.id }, from: { userId: task.by.userId, name: task.by.name }, clientId: 'srv_' + task.id });
+          }
+        }
+      }
+      // 统计：服务端直写（含人员/项目/分集/分镜信息），管理端经联邦合并后全网络可见
+      const p = db.projects.find(x => x.id === task.projectId);
+      const epMeta = db.episodes.find(x => x.id === task.episodeId);
+      const usr = db.server.users.find(x => x.id === task.by.userId);
+      const codeObj = usr ? (db.server.codes.find(c => c.id === usr.codeId) || null) : null;
+      let shotIdx = 0;
+      if (task.episodeId && task.shotId) {
+        const epd = loadEpisode(task.episodeId);
+        if (epd) { const ii = epd.shots.findIndex(s => s.id === task.shotId); if (ii >= 0) shotIdx = ii; }
+      }
+      db.stats.push({
+        id: uid(), groupId: task.id, ts: nowTs(), userId: task.by.userId, userName: task.by.name,
+        userCode: codeObj ? codeObj.code : '', codeName: codeObj ? codeObj.name : '',
+        projectId: task.projectId, projectName: p ? p.name : '', episodeId: task.episodeId, episodeName: epMeta ? epMeta.name : '',
+        kind: 'video', resolution: '480p', durationSec: Number(result.duration || 0),
+        shotId: task.shotId, shotIndex: shotIdx, shotText: String(task.shotText || '').slice(0, 60),
+        nodeId: db.server.nodeId
+      });
+      saveKey('stats', 'stats.json');
+    } catch (e) { console.error('finishVideoTask', e.message); }
+  }
+  // 提交生成任务：立即返回 taskId；后台执行（多任务天然并发，同用户多分镜/多用户互不阻塞）
+  app.post('/api/ai/video/task', async (req, res) => {
+    const u = needUser(req, res); if (!u) return;
+    const b = req.body || {};
+    const m = getModel(b.projectId, 'video', b.modelId);
+    if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
+    const task = {
+      id: 'vt_' + uid(), projectId: b.projectId, episodeId: b.episodeId || '', shotId: b.shotId || '',
+      shotText: String(b.shotText || '').slice(0, 60),
+      params: { prompt: b.prompt, aspect: b.aspect, firstFrame: b.firstFrame, lastFrame: b.lastFrame, duration: b.duration, refImages: b.refImages, audio: b.audio },
+      status: 'running', pct: 0, startedAt: nowTs(), duration: Math.max(4, Math.min(15, Number(b.duration) || 5)),
+      by: { userId: u.id, name: u.name }
+    };
+    videoTasks.set(task.id, task);
+    res.json({ ok: true, taskId: task.id });
+    // 后台执行（不 await：客户端断开/退出均不影响）
+    (async () => {
+      const estMs = (90 + task.duration * 6) * 1000;   // 进度估算与客户端一致
+      const tick = setInterval(() => {
+        if (task.status !== 'running') { clearInterval(tick); return; }
+        task.pct = Math.min(95, Math.round((nowTs() - task.startedAt) / estMs * 100));
+      }, 1000);
+      try {
+        const result = await runVideoGen(m, task.params);
+        clearInterval(tick);
+        task.pct = 100; task.status = 'done'; task.url = result.url;
+        finishVideoTask(task, result);
+      } catch (e) {
+        clearInterval(tick);
+        task.status = 'error'; task.error = String(e.message || e);
+      }
+      setTimeout(() => { try { videoTasks.delete(task.id); } catch (e2) { } }, 30 * 60 * 1000);
+    })();
+  });
+  // 查询单个任务状态（客户端轮询兜底：WS 断连/广播丢失时发现完成或失败）
+  app.get('/api/ai/video/task/:id', (req, res) => {
+    if (!needUser(req, res)) return;
+    const t = videoTasks.get(req.params.id);
+    if (!t) return res.status(404).json({ error: '任务不存在或已过期' });
+    res.json({ ok: true, task: taskPublic(t) });
+  });
+  // 查询分集进行中的任务（客户端重进分集/重启软件后恢复进度显示）
+  app.get('/api/ai/video/tasks/active', (req, res) => {
+    if (!needUser(req, res)) return;
+    const eid = String(req.query.episodeId || '');
+    const list = [];
+    videoTasks.forEach(t => { if (t.status === 'running' && (!eid || t.episodeId === eid)) list.push(taskPublic(t)); });
+    res.json({ ok: true, tasks: list });
   });
 
   // ---------- 联邦同步：跨节点资产共享 ----------
@@ -461,7 +571,7 @@ function createServer(dataDir, port = 3210) {
   // 联邦合并：接收其他节点推送的数据，按 id 去重只新增本机没有的（避免循环 + 数据互通）
   app.post('/federate/merge', (req, res) => {
     const body = req.body || {};
-    let changed = { projects: 0, codes: 0, episodes: 0 };
+    let changed = { projects: 0, codes: 0, episodes: 0, stats: 0 };
     // 合并项目（按 id 去重）
     if (Array.isArray(body.projects)) {
       const ids = new Set(db.projects.map(p => p.id));
@@ -502,9 +612,20 @@ function createServer(dataDir, port = 3210) {
         }
       }
     }
+    // 合并生成统计（按 id 去重；视频生成记录跨设备聚合，离线设备上线后自动补齐，无遗漏无重复）
+    if (Array.isArray(body.stats)) {
+      const ids = new Set(db.stats.map(s => s.id));
+      for (const s of body.stats) {
+        if (s && s.id && !ids.has(s.id)) {
+          db.stats.push(s);
+          changed.stats++;
+        }
+      }
+    }
     if (changed.projects) saveKey('projects', 'projects.json');
     if (changed.codes) saveKey('server', 'server.json');
     if (changed.episodes) saveKey('episodes', 'episodes.json');
+    if (changed.stats) saveKey('stats', 'stats.json');
     res.json({ ok: true, changed });
   });
 
@@ -525,7 +646,8 @@ function createServer(dataDir, port = 3210) {
         projectId, projectName: p ? p.name : '', episodeId, episodeName: ep ? ep.name : '',
         kind: kind || 'video', resolution: resolution || '', durationSec: Number(it.duration || durationSec || 0),
         shotId: it.shotId || '', shotIndex: (it.index === undefined ? 0 : it.index),
-        shotText: String(it.text || '').slice(0, 60)
+        shotText: String(it.text || '').slice(0, 60),
+        nodeId: db.server.nodeId
       });
     });
     saveKey('stats', 'stats.json');

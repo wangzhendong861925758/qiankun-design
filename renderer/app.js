@@ -24,6 +24,8 @@ const S = {
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
   stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null,
+  // 视频生成任务表（v2.0.7+）：shotId -> {taskId,duration,startedAt,pct}；多任务并发，与页面解耦
+  videoGens: {}, videoErrs: {}, videoTickTimer: null, _vtPollBusy: false, _vtLastPoll: 0,
   videoStyle: (function(){ try { return localStorage.getItem('qk_video_style') || ''; } catch(e){ return ''; } })(),
   // 联邦同步：每台机器作为自己的服务器，进入项目时自动从其他节点拉取资产元数据+原图缓存到本机
   federation: { syncing: false, progress: { cur: 0, total: 0 }, peers: [], lastSyncTs: 0, fedTimer: null }
@@ -400,6 +402,17 @@ async function openEpisode(id) {
     // 首次进入（无分镜且无剧本）弹出解析剧本页；再次进入保留上次操作，直接进编辑器
     if (!S.data.shots.length && !S.data.script) showSetup();
     else enterEditorPage();
+    // 恢复本分集进行中的视频生成任务（服务端后台执行，与页面无关；退出重进/重启软件后继续显示进度）
+    try {
+      const at = await S.api.aiVideoActiveTasks(S.episode.id);
+      (at.tasks || []).forEach(t => {
+        if (!S.videoGens[t.shotId]) S.videoGens[t.shotId] = { taskId: t.id, duration: t.duration || 5, startedAt: t.startedAt, pct: t.pct || 0 };
+      });
+      if (Object.keys(S.videoGens).length) { startVideoTick(); if (S.page === 'editor') { renderShots(); renderCharPanel(); renderVideoPanel(); } }
+    } catch (e) { /* 旧版服务器无此接口：忽略 */ }
+    // 跨节点媒体文件补齐：分镜视频/配音文件可能存于其他节点（联邦拉来的分集数据只有路径），
+    // 检测本机 404 的文件 → 从联邦节点拉取上传本机 → 更新路径（呈现以生成成功为准，任何设备打开都能看到视频）
+    setTimeout(syncEpisodeMediaFiles, 2500);
     // 进入分集后启动联邦资产同步（一次性 + 每 30 秒兜底，确保跨节点资产自动可见可调用）
     setTimeout(syncFederationAssets, 1200);
     if (S.federation.fedTimer) clearInterval(S.federation.fedTimer);
@@ -579,7 +592,7 @@ function renderShots() {
       <div class="sr-cell sr-img"><div class="frame-imgs">${frameSlotHTML(s, 'storyboardImg', '图', true)}${frameSlotHTML(s, 'lastImg', '尾', false)}</div></div>
       <div class="sr-cell sr-video">
         ${videoSlotHTML(s)}
-        <button class="gen-video-btn" data-act="gen-video-btn" data-sid="${s.id}">${s.videoUrl ? '重新生成' : '生成本镜视频'}</button>
+        <button class="gen-video-btn" data-act="gen-video-btn" data-sid="${s.id}" ${S.videoGens[s.id] ? 'disabled' : ''}>${S.videoGens[s.id] ? '⏳ 生成中 ' + (S.videoGens[s.id].pct || 0) + '%' : (s.videoUrl ? '重新生成' : '生成本镜视频')}</button>
       </div>
       <div class="sr-cell sr-ops">
         <button class="sr-ops-btn" data-act="up" data-sid="${s.id}">↑</button>
@@ -635,6 +648,9 @@ function frameSlotHTML(s, field, badge, canGen) {
     </div>`;
 }
 function videoSlotHTML(s) {
+  // 生成中（任务在服务端后台执行，退出页面/软件不影响）：显示进度徽标
+  const g = S.videoGens[s.id];
+  if (g) return `<div class="video-slot video-slot-gen" data-vslot="${s.id}"><div class="play-icon spin">⏳</div><div class="badge-cnt">${g.pct || 0}%</div></div>`;
   if (s.videoUrl) return `
     <div class="video-slot" data-act="play" data-url="${S.api.abs(s.videoUrl)}">
       <video preload="none" src="${esc(S.api.abs(s.videoUrl))}"></video>
@@ -1290,8 +1306,9 @@ function renderVideoPanel() {
   const durs = videoDurationOptions(S.sel.video);
   const min = durs[0], max = durs[durs.length - 1];
   const cur = Math.min(Math.max(s.durSel || min, min), max);
-  const gen = (S.videoGen && S.videoGen.sid === s.id) ? S.videoGen : null;
-  const err = (S.videoErr && S.videoErr.sid === s.id) ? S.videoErr : null;
+  const gen = S.videoGens[s.id] || null;              // 本镜生成任务（可多个分镜同时进行）
+  const genEntries = Object.entries(S.videoGens);     // 全部进行中任务（并发呈现）
+  const err = S.videoErrs[s.id] || null;
   const url = s.videoUrl ? S.api.abs(s.videoUrl) : '';
   const flReady = (s.firstImg || s.storyboardImg) && s.lastImg;
   const first = s.firstImg || s.storyboardImg;
@@ -1336,13 +1353,19 @@ function renderVideoPanel() {
       <button class="btn primary vp-gen-btn" id="vpGen" ${gen ? 'disabled' : ''}>${gen ? '⏳ 生成中…' : (url ? '🔄 重新生成' : '🎬 生成视频')}</button>
       ${model ? `<div class="vp-model">模型：${esc(model.name)}</div>` : '<div class="vp-model warn">未选择视频模型，请在底部状态栏选择</div>'}
     </div>
-    ${gen ? `
+    ${genEntries.length ? `
     <div class="vp-sec vp-progress-sec">
-      <div class="vp-progress-label"><span>视频生成中（${gen.duration} 秒）</span><span id="vpPct">${gen.pct || 0}%</span></div>
-      <div class="vp-progress"><div class="vp-progress-bar" id="vpBar" style="width:${gen.pct || 0}%"></div></div>
-      <div class="vp-elapsed" id="vpElapsed">已用时 ${fmtElapsed(gen.startedAt)}</div>
+      <div class="vp-progress-label"><span>视频生成中（${genEntries.length} 个任务并行 · 服务端后台执行，退出本页/软件不影响）</span></div>
+      ${genEntries.map(([gsid, g]) => {
+        const gi = S.data.shots.findIndex(x => x.id === gsid) + 1;
+        return `<div style="margin-top:10px">
+          <div class="vp-progress-label"><span>第 ${gi || '?'} 镜（${g.duration} 秒）${gsid === s.id ? ' · 本镜' : ''}</span><span id="vgen-pct-${gsid}">${g.pct || 0}%</span></div>
+          <div class="vp-progress"><div class="vp-progress-bar" id="vgen-bar-${gsid}" style="width:${g.pct || 0}%"></div></div>
+          <div class="vp-elapsed" id="vgen-elapsed-${gsid}">已用时 ${fmtElapsed(g.startedAt)}</div>
+        </div>`;
+      }).join('')}
     </div>` : ''}
-    ${err ? `<div class="vp-sec vp-error"><b>❌ 生成失败</b><div class="vp-err-msg">${esc(err.msg)}</div></div>` : ''}
+    ${err ? `<div class="vp-sec vp-error"><b>❌ 生成失败</b><div class="vp-err-msg">${esc(err)}</div></div>` : ''}
     ${isFL ? `<div class="vp-hint ${flReady ? '' : 'warn'}">${flReady ? '首尾帧模式：将使用本镜首帧 + 尾帧两张图片生成' : '⚠ 首尾帧模式：需先提供首帧与尾帧两张图片（可在分镜中 AI 生成或上传）'}</div>` : ''}
     ${videos.length ? `
     <div class="vp-sec">
@@ -1392,75 +1415,160 @@ function renderVideoPanel() {
   const genBtn = el.querySelector('#vpGen');
   if (genBtn) genBtn.onclick = () => doGenShotVideo(s.id, s.durSel || cur, isFL);
 }
+// ---------- 视频生成（v2.0.7+：服务端后台任务，多任务并发，与页面/客户端解耦） ----------
+// 流程：提交任务（立即返回 taskId，服务端后台执行）→ 本地进度 tick →
+// 完成由两条路径驱动：① WS 广播 shot-update（带 genTaskId）② 每 20s 轮询任务状态兜底（WS 断连/广播丢失）
+// 用户退出编辑页/退出软件均不影响生成；重进分集时通过 active 接口恢复进度显示
 async function doGenShotVideo(id, duration, isFL) {
   const s = shotById(id); if (!s) return;
   if (!S.sel.video) return toast('请先选择视频模型', 'err');
+  if (S.videoGens[id]) return toast('本镜视频生成中，请等待完成', 'err');
   const first = s.firstImg || s.storyboardImg;
   // 首尾帧模式：首帧+尾帧两张图必填；全能参考模式：分镜图可选
   if (isFL && (!first || !s.lastImg)) {
-    S.videoErr = { sid: id, msg: '首尾帧模式必须提供首帧与尾帧两张图片（可AI生成或上传）' };
+    S.videoErrs[id] = '首尾帧模式必须提供首帧与尾帧两张图片（可AI生成或上传）';
     renderVideoPanel();
     return;
   }
-  S.videoErr = null;
-  S.videoGen = { sid: id, duration, startedAt: Date.now(), pct: 0 };
-  renderVideoPanel();
-  // 进度条：按时长估算总耗时（生成通常1~5分钟），平滑推进至95%等待返回
-  const estMs = (90 + duration * 6) * 1000;
-  clearInterval(S.videoGenTimer);
-  S.videoGenTimer = setInterval(() => {
-    if (!S.videoGen || S.videoGen.sid !== id || (S.page !== 'editor' && S.page !== 'setup')) { clearInterval(S.videoGenTimer); return; }
-    const elapsed = Date.now() - S.videoGen.startedAt;
-    S.videoGen.pct = Math.min(95, Math.round(elapsed / estMs * 100));
-    const bar = $('#vpBar'), pct = $('#vpPct'), el2 = $('#vpElapsed');
-    if (bar) bar.style.width = S.videoGen.pct + '%';
-    if (pct) pct.textContent = S.videoGen.pct + '%';
-    if (el2) el2.textContent = '已用时 ' + fmtElapsed(S.videoGen.startedAt);
-  }, 1000);
+  delete S.videoErrs[id];
+  // ---- 构建提示词与参考（与提交参数一致） ----
+  let refUrls = [], prompt, refs = [];
+  if (isFL) {
+    prompt = buildVideoPrompt(s, []);
+  } else {
+    refs = collectShotRefs(s);
+    if (first) refs.push({ url: S.api.abs(first), kind: '分镜图', name: '分镜图', desc: '' });
+    const capped = refs.slice(0, 9);
+    refUrls = capped.map(r => r.url);
+    prompt = buildVideoPrompt(s, capped);
+  }
+  // 声音来源：优先绑定人物资产上传的音色参考样本；无则用分镜配音（TTS/自由上传）
+  const voiceRef = refs.find(r => r.kind === '人物' && r.audio);
+  const audioUrl = voiceRef ? S.api.abs(voiceRef.audio) : (s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
+  const payload = {
+    projectId: S.project.id, modelId: S.sel.video, prompt,
+    aspect: S.videoAspect || S.data.aspect,
+    firstFrame: isFL && first ? S.api.abs(first) : '', lastFrame: isFL && s.lastImg ? S.api.abs(s.lastImg) : '',
+    duration, refImages: refUrls, audio: audioUrl,
+    episodeId: S.episode.id, shotId: id, shotText: s.text || ''
+  };
+  // 先本地占位（提交中），拿到 taskId 后更新
+  S.videoGens[id] = { taskId: null, duration, startedAt: Date.now(), pct: 0 };
+  renderShots(); renderVideoPanel();
+  startVideoTick();
   try {
-    // 全能参考模式：收集绑定资产参考图（人物/场景/道具）+ 分镜图，多模态参考生成
-    // 首尾帧模式：仅用首帧+尾帧（两种模式互斥，不可混用）
-    let refUrls = [];
-    let prompt;
-    let refs = [];
-    if (isFL) {
-      prompt = buildVideoPrompt(s, []);
-    } else {
-      refs = collectShotRefs(s);
-      if (first) refs.push({ url: S.api.abs(first), kind: '分镜图', name: '分镜图', desc: '' });
-      const capped = refs.slice(0, 9);
-      refUrls = capped.map(r => r.url);
-      prompt = buildVideoPrompt(s, capped);
+    const r = await S.api.aiVideoTask(payload);
+    if (S.videoGens[id]) S.videoGens[id].taskId = r.taskId;
+  } catch (e) {
+    const msg = e.message || String(e);
+    // 旧版服务器（<2.0.7）无任务接口 → 回退同步生成（结果依赖页面保持打开；统计由本客户端上报）
+    if (/HTTP 404/.test(msg)) {
+      delete S.videoGens[id];
+      return doGenShotVideoLegacy(id, duration, payload);
     }
-    // 声音来源：优先绑定人物资产上传的音色参考样本；无则用分镜配音（TTS/自由上传）
-    const voiceRef = refs.find(r => r.kind === '人物' && r.audio);
-    const audioUrl = voiceRef ? S.api.abs(voiceRef.audio) : (s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls, audioUrl);
-    clearInterval(S.videoGenTimer);
+    delete S.videoGens[id];
+    S.videoErrs[id] = msg;
+    renderShots(); renderVideoPanel();
+    toast('视频生成失败：' + msg, 'err', 4000);
+  }
+}
+// 旧版服务器兼容：同步生成（等待结果返回；升级后各设备版本一致时不会走到这里）
+async function doGenShotVideoLegacy(id, duration, payload) {
+  const s = shotById(id); if (!s) return;
+  S.videoGens[id] = { taskId: null, duration, startedAt: Date.now(), pct: 0, legacy: true };
+  renderShots(); renderVideoPanel();
+  startVideoTick();
+  try {
+    const r = await S.api.aiVideo(payload.projectId, payload.modelId, payload.prompt, payload.aspect, payload.firstFrame, payload.lastFrame, duration, payload.refImages, payload.audio);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
-    // 视频历史记录：每次生成成功追加到 videos 数组（最新在前）
     const videos = (s.videos || []).slice();
     videos.unshift({ url: r.url, duration: r.duration || duration, ts: Date.now() });
     updShot(id, { videoUrl: r.url, duration: r.duration || duration, videos });
-    S.videoGen = null; S.videoErr = null;
-    renderShots(); renderVideoPanel();
-    toast('视频已生成', 'ok');
-    // 记录统计：按校验码所属人员区分，按单个镜头生成次数呈现
+    finishLocalVideoGen(id, '视频已生成');
+    // 旧服务器统计由客户端上报
     try {
       const shotIdx = S.data.shots.findIndex(x => x.id === id);
       await S.api.stats({
-        projectId: S.project.id, episodeId: S.episode.id, kind: 'video',
+        projectId: payload.projectId, episodeId: payload.episodeId, kind: 'video',
         resolution: '480p', durationSec: r.duration || duration,
         items: [{ shotId: id, index: shotIdx, text: s.text || '', duration: r.duration || duration }]
       });
     } catch (e2) { console.warn('stats record failed', e2.message); }
   } catch (e) {
-    clearInterval(S.videoGenTimer);
-    S.videoGen = null;
-    S.videoErr = { sid: id, msg: (e.message || String(e)) };
-    renderVideoPanel();
-    toast('视频生成失败：' + (e.message || e), 'err', 4000);
+    failLocalVideoGen(id, e.message || String(e));
   }
+}
+// 任务完成（本地态清理 + 提示；数据落地已由服务端完成并广播）
+function finishLocalVideoGen(sid, msg) {
+  const had = !!S.videoGens[sid];
+  delete S.videoGens[sid];
+  delete S.videoErrs[sid];
+  if (S.page === 'editor' || S.page === 'setup') { renderShots(); renderCharPanel(); renderVideoPanel(); }
+  if (had && msg) toast(msg, 'ok');
+}
+// 任务失败（本地态清理 + 错误呈现）
+function failLocalVideoGen(sid, errMsg) {
+  delete S.videoGens[sid];
+  S.videoErrs[sid] = errMsg || '生成失败';
+  if (S.page === 'editor' || S.page === 'setup') { renderShots(); renderVideoPanel(); }
+  toast('视频生成失败：' + (errMsg || ''), 'err', 4000);
+}
+// 统一进度 tick：单一 interval 驱动所有并发任务的进度条（局部 DOM 更新，不打断输入）
+// 同时每 20s 向服务器查询任务真实状态（WS 断连/广播丢失的兜底通道）
+function startVideoTick() {
+  clearInterval(S.videoTickTimer);
+  S.videoTickTimer = setInterval(() => {
+    const gens = S.videoGens;
+    const keys = Object.keys(gens);
+    if (!keys.length) { clearInterval(S.videoTickTimer); return; }
+    keys.forEach(sid => {
+      const g = gens[sid];
+      const estMs = (90 + g.duration * 6) * 1000;   // 进度估算：与服务器侧一致
+      g.pct = Math.min(95, Math.round((Date.now() - g.startedAt) / estMs * 100));
+      // 分镜列表：生成按钮文本 + 视频格徽标（局部更新）
+      const btn = document.querySelector('.gen-video-btn[data-sid="' + sid + '"]');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 生成中 ' + g.pct + '%'; }
+      const slot = document.querySelector('.video-slot[data-vslot="' + sid + '"] .badge-cnt');
+      if (slot) slot.textContent = g.pct + '%';
+      // 右侧面板：每个任务独立的进度条（局部更新）
+      const bar = $('#vgen-bar-' + sid), pct = $('#vgen-pct-' + sid), el2 = $('#vgen-elapsed-' + sid);
+      if (bar) bar.style.width = g.pct + '%';
+      if (pct) pct.textContent = g.pct + '%';
+      if (el2) el2.textContent = '已用时 ' + fmtElapsed(g.startedAt);
+    });
+    // 每 20s 轮询服务器任务状态（兜底：WS 断连、广播丢失、其他设备生成的任务）
+    if (!S._vtPollBusy && Date.now() - (S._vtLastPoll || 0) > 20000) {
+      S._vtLastPoll = Date.now();
+      S._vtPollBusy = true;
+      Promise.all(keys.filter(sid => gens[sid] && gens[sid].taskId).map(async sid => {
+        try {
+          const r = await S.api.aiVideoTaskStatus(gens[sid].taskId);
+          const t = r.task; if (!t) return;
+          if (t.status === 'done') {
+            // WS 广播未送达时本地兜底落地（正常路径已由服务端写入分集并广播，此处仅更新本机内存，不再回传）
+            const s = shotById(sid);
+            if (s && t.url && s.videoUrl !== t.url) {
+              const videos = (s.videos || []).slice();
+              videos.unshift({ url: t.url, duration: t.duration || gens[sid].duration, ts: Date.now() });
+              Object.assign(s, { videoUrl: t.url, duration: t.duration || gens[sid].duration, videos });
+            }
+            const idx = S.data.shots.findIndex(x => x.id === sid) + 1;
+            finishLocalVideoGen(sid, '第 ' + (idx || '?') + ' 镜视频已生成');
+          } else if (t.status === 'error') {
+            failLocalVideoGen(sid, t.error);
+          } else if (t.pct && gens[sid]) {
+            gens[sid].pct = Math.max(gens[sid].pct, t.pct);
+          }
+        } catch (e) {
+          // 任务不存在（服务器重启等）：清除本地任务态，重新打开分集可查看已生成结果
+          if (/HTTP 404/.test(e.message || '') && gens[sid]) {
+            const idx = S.data.shots.findIndex(x => x.id === sid) + 1;
+            finishLocalVideoGen(sid, '第 ' + (idx || '?') + ' 镜任务已结束（服务器可能重启），结果以分镜数据为准');
+          }
+        }
+      })).finally(() => { S._vtPollBusy = false; });
+    }
+  }, 1000);
 }
 
 function initCompose() {}
@@ -1511,15 +1619,17 @@ async function syncFederationAdmin() {
     // 并行拉取每个节点的全量数据
     const results = await Promise.all(peers.map(p => S.api.federateAll(p.http).catch(() => null)));
     // 合并所有节点的数据（跨节点再去重一次，避免多节点有相同数据重复推送）
-    const merged = { projects: [], codes: [], episodes: [] };
-    const seenP = new Set(), seenC = new Set(), seenE = new Set();
+    // stats：所有用户所有时间的视频生成记录（管理端"数据统计"跨设备实时聚合的关键）
+    const merged = { projects: [], codes: [], episodes: [], stats: [] };
+    const seenP = new Set(), seenC = new Set(), seenE = new Set(), seenS = new Set();
     for (const d of results) {
       if (!d) continue;
       (d.projects || []).forEach(p => { if (p.id && !seenP.has(p.id)) { seenP.add(p.id); merged.projects.push(p); } });
       (d.codes || []).forEach(c => { if (c.id && !seenC.has(c.id)) { seenC.add(c.id); merged.codes.push(c); } });
       (d.episodes || []).forEach(e => { if (e.id && !seenE.has(e.id)) { seenE.add(e.id); merged.episodes.push(e); } });
+      (d.stats || []).forEach(s => { if (s.id && !seenS.has(s.id)) { seenS.add(s.id); merged.stats.push(s); } });
     }
-    if (merged.projects.length || merged.codes.length || merged.episodes.length) {
+    if (merged.projects.length || merged.codes.length || merged.episodes.length || merged.stats.length) {
       try { await S.api.federateMerge(merged); } catch (e) {}
     }
     // 同步后刷新当前可见页面
@@ -1530,6 +1640,56 @@ async function syncFederationAdmin() {
 }
 // → 合并到 S.project.assets → 持久化 + 广播 assets-update，本机其他客户端立即可见
 // 用户感知：进入项目后顶部显示"📡 联邦同步中… x/y 张已缓存"，结束后资产栏自动刷新
+// 跨节点分镜媒体补齐：分镜视频/配音文件可能只在生成它的节点上（联邦拉来的分集数据只有路径）。
+// 检测本机 404 的媒体文件 → 从联邦节点拉取 → 上传本机 → 原地更新分镜路径（emit 广播，本机持久化）。
+// 保证"呈现以生成成功为准"：任何设备打开都能看到已生成的视频。
+async function syncEpisodeMediaFiles() {
+  if (!S.project || !S.episode || !S.api || !S.data) return;
+  if (!window.mochi || !mochi.discoverServers) return;
+  try {
+    // 收集本分集所有本机媒体路径（主视频 + 历史视频 + 配音）
+    const urls = new Set();
+    S.data.shots.forEach(s => {
+      if (s.videoUrl && /^\/assets\//.test(s.videoUrl)) urls.add(s.videoUrl);
+      (s.videos || []).forEach(v => { if (v.url && /^\/assets\//.test(v.url)) urls.add(v.url); });
+      if (s.voiceUrl && /^\/assets\//.test(s.voiceUrl)) urls.add(s.voiceUrl);
+    });
+    // 检测哪些文件本机不存在
+    const missing = [];
+    for (const u of urls) {
+      try { const r = await fetch(S.api.abs(u), { method: 'HEAD' }); if (!r.ok) missing.push(u); }
+      catch (e) { /* 网络异常按存在处理，避免误拉 */ }
+    }
+    if (!missing.length) return;
+    const peers = (await mochi.discoverServers()).filter(p => p.http && p.http !== S.base);
+    if (!peers.length) return;
+    let fixed = 0;
+    const urlMap = {};   // 旧路径 → 新路径
+    for (const u of missing) {
+      for (const peer of peers) {
+        try {
+          const b64 = await S.api.federateFetchUrlBlobBase64(peer.http, u);
+          const up = await S.api.upload('fed-ep-' + u.split('/').pop(), b64);
+          if (up && up.url) { urlMap[u] = up.url; fixed++; break; }
+        } catch (e) { /* 试下一个节点 */ }
+      }
+    }
+    if (!fixed) return;
+    // 原地更新分镜路径（仅替换确实拉到新文件的字段）并广播
+    let changed = false;
+    S.data.shots.forEach(s => {
+      const mapUrl = u => urlMap[u] || u;
+      if (s.videoUrl && urlMap[s.videoUrl]) { s.videoUrl = mapUrl(s.videoUrl); changed = true; }
+      if (s.voiceUrl && urlMap[s.voiceUrl]) { s.voiceUrl = mapUrl(s.voiceUrl); changed = true; }
+      (s.videos || []).forEach(v => { if (v.url && urlMap[v.url]) { v.url = mapUrl(v.url); changed = true; } });
+    });
+    if (changed) {
+      emitOp({ kind: 'shots-replace', episodeId: S.episode.id, shots: S.data.shots, script: S.data.script });
+      if (S.page === 'editor') { renderShots(); renderVideoPanel(); }
+      console.log('[联邦] 分镜媒体补齐完成：' + fixed + ' 个文件');
+    }
+  } catch (e) { console.warn('syncEpisodeMediaFiles', e.message); }
+}
 async function syncFederationAssets() {
   if (S.federation.syncing) return;
   if (!S.project || !S.api) return;
@@ -1684,7 +1844,15 @@ function initCollab() {
     if (!op || !S.data) return;
     let rerender = false;
     if (op.kind === 'shot-add') { if (!S.data.shots.some(s => s.id === op.shot.id)) { S.data.shots.push(op.shot); rerender = true; } }
-    else if (op.kind === 'shot-update') { const i = S.data.shots.findIndex(s => s.id === op.shot.id); if (i >= 0) { S.data.shots[i] = op.shot; rerender = true; } }
+    else if (op.kind === 'shot-update') {
+      const i = S.data.shots.findIndex(s => s.id === op.shot.id);
+      if (i >= 0) { S.data.shots[i] = op.shot; rerender = true; }
+      // 服务端视频任务完成广播（op.genTaskId）：清除本地任务态并提示——视频呈现以"生成成功"为准
+      if (op.genTaskId && S.videoGens[op.shot.id] && S.videoGens[op.shot.id].taskId === op.genTaskId) {
+        finishLocalVideoGen(op.shot.id, '第 ' + (i + 1) + ' 镜视频已生成');
+        rerender = true;
+      }
+    }
     else if (op.kind === 'shot-delete') { S.data.shots = S.data.shots.filter(s => s.id !== op.shotId); rerender = true; }
     else if (op.kind === 'shots-replace') {
       S.data.shots = op.shots;
@@ -1740,6 +1908,8 @@ function enterAdmin() {
   $('#adminName').textContent = '👤 ' + S.admin.name;
   showPage('admin');
   loadAdmin();
+  // 打开管理端即联邦同步：拉齐其他设备/离线期间的生成记录，同步完成自动刷新当前页
+  syncFederationAdmin().then(() => loadAdmin()).catch(() => { });
 }
 async function loadAdmin() {
   try { adminCache = await S.api.adminData(); renderAdmin(); } catch (e) { toast(e.message, 'err'); }
@@ -1772,7 +1942,7 @@ function renderAdminStats(b) {
     byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution, userName: x.codeName || x.userName, userCode: x.userCode || '' };
     byShot[k].count++; byShot[k].last = Math.max(byShot[k].last, x.ts); byShot[k].dur += x.durationSec || 0;
   });
-  const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last).slice(0, 300);
+  const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last);   // 全量呈现（联邦合并后含所有设备所有时间的记录）
   b.innerHTML = `
     <div class="admin-toolbar">
       <button class="btn ghost" id="btnRefreshStats">🔄 刷新</button>
@@ -1789,12 +1959,17 @@ function renderAdminStats(b) {
       <table class="admin-table"><tr><th>校验码</th><th>所属人员</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th><th>最近生成</th></tr>
       ${userRows.map(v => `<tr><td class="code-mono">${esc(v.code)}</td><td>${esc(v.name)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td><td>${fmtTime(v.last)}</td></tr>`).join('') || '<tr><td colspan="6">暂无数据，用户生成视频后此处自动统计</td></tr>'}
       </table></div>
-    <div class="admin-section"><h3>按分镜统计（最近300条）</h3>
+    <div class="admin-section"><h3>按分镜统计（全量 ${shotRows.length} 条 · 跨设备联邦合并）</h3>
       <table class="admin-table"><tr><th>校验码人员</th><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
       ${shotRows.map(r => `<tr><td>${esc(r.userName)}${r.userCode ? '<span class="code-mono" style="margin-left:4px;font-size:10px;color:var(--text3)">' + esc(r.userCode) + '</span>' : ''}</td><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="9">暂无数据，用户生成视频后此处自动统计</td></tr>'}
       </table></div>`;
   const refBtn = $('#btnRefreshStats');
-  if (refBtn) refBtn.onclick = loadAdmin;
+  if (refBtn) refBtn.onclick = async () => {
+    // 刷新 = 先联邦同步拉齐其他节点的生成记录（含离线期间其他设备产生的数据），再加载本机聚合结果
+    refBtn.disabled = true; refBtn.textContent = '📡 同步中…';
+    try { await syncFederationAdmin(); } catch (e) { }
+    try { await loadAdmin(); } catch (e) { }
+  };
   const cb = $('#autoRefreshStats');
   if (cb) cb.onchange = () => {
     S.autoRefreshStats = cb.checked;

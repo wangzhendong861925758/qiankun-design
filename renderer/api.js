@@ -30,6 +30,10 @@ class Api {
   aiText(projectId, modelId, messages, jsonMode) { return apiFetch(this.base, '/api/ai/text', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, messages, jsonMode }) }); }
   aiImage(projectId, modelId, prompt, aspect) { return apiFetch(this.base, '/api/ai/image', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, prompt, aspect }) }); }
   aiVideo(projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages, audio) { return apiFetch(this.base, '/api/ai/video', { method: 'POST', headers: this.headers(), body: JSON.stringify({ projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages, audio }) }); }
+  // 视频生成后台任务（v2.0.7+）：提交即返回 taskId，服务端后台执行，与页面/客户端解耦
+  aiVideoTask(payload) { return apiFetch(this.base, '/api/ai/video/task', { method: 'POST', headers: this.headers(), body: JSON.stringify(payload) }); }
+  aiVideoTaskStatus(taskId) { return apiFetch(this.base, '/api/ai/video/task/' + encodeURIComponent(taskId), { headers: this.headers() }); }
+  aiVideoActiveTasks(episodeId) { return apiFetch(this.base, '/api/ai/video/tasks/active?episodeId=' + encodeURIComponent(episodeId || ''), { headers: this.headers() }); }
 
   stats(payload) { return apiFetch(this.base, '/api/stats', { method: 'POST', headers: this.headers(), body: JSON.stringify(payload) }); }
 
@@ -63,6 +67,19 @@ class Api {
     if (!r.ok) throw new Error('拉取原图失败 HTTP ' + r.status);
     const buf = await r.arrayBuffer();
     // 二进制 → base64
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+  // 按文件路径联邦拉取任意 /assets/xxx 文件（视频/配音等分镜媒体，二进制转 base64）
+  async federateFetchUrlBlobBase64(base, url) {
+    const r = await fetch(base.replace(/\/+$/, '') + '/federate/blob?url=' + encodeURIComponent(url));
+    if (!r.ok) throw new Error('拉取文件失败 HTTP ' + r.status);
+    const buf = await r.arrayBuffer();
     const bytes = new Uint8Array(buf);
     let bin = '';
     const chunk = 0x8000;
