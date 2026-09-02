@@ -864,6 +864,7 @@ function openAssetModal(kind, asset, onSave) {
   const isChar = kind === 'characters';
   const a = asset || { id: uid(), name: '', desc: '', img: '', audio: '', voice: isChar ? 'zh-CN-XiaoxiaoNeural' : '' };
   const name = { characters: '人物', scenes: '场景', props: '道具', others: '其他', sfx: '音效' }[kind];
+  let img = a.img, audio = a.audio;
   openModal((asset ? '编辑' : '新增') + name + '资产', `
     <div class="form-row"><label>名称 *</label><input id="amName" value="${esc(a.name)}"></div>
     <div class="form-row"><label>描述</label><textarea id="amDesc" rows="3">${esc(a.desc)}</textarea></div>
@@ -874,9 +875,15 @@ function openAssetModal(kind, asset, onSave) {
         <button class="btn small" id="amImgAi">AI生成</button>
       </div></div>` : ''}
     ${isChar ? `<div class="form-row"><label>配音音色</label><select id="amVoice">${VOICES.map(v => `<option value="${v[0]}" ${a.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select></div>` : ''}
+    ${isChar ? `<div class="form-row"><label>声音音色参考</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${audio ? `<audio src="${esc(S.api.abs(audio))}" controls style="height:32px;max-width:220px"></audio>` : '<span class="hint">未上传</span>'}
+        <button class="btn small" id="amAudioUp">上传声音样本</button>
+        ${audio ? '<button class="btn small ghost" id="amAudioRm">移除</button>' : ''}
+        <span class="hint">仅作音色参考：视频生成时 AI 按此音色念剧本台词</span>
+      </div></div>` : ''}
     <div class="modal-foot-btns"><button class="btn ghost" id="amCancel">取消</button><button class="btn primary" id="amSave">保存</button></div>
   `);
-  let img = a.img, audio = a.audio;
   const up = $('#amImgUp');
   if (up) up.onclick = async () => { try { const u = await uploadPicked('image/*'); if (u) { img = u; $('#amImgPrev').src = S.api.abs(u); } } catch (e) { toast(e.message, 'err'); } };
   const ai = $('#amImgAi');
@@ -890,12 +897,26 @@ function openAssetModal(kind, asset, onSave) {
       img = r.url; $('#amImgPrev').src = S.api.abs(r.url);
     } catch (e) { toast(e.message, 'err'); } finally { ai.disabled = false; ai.textContent = 'AI生成'; }
   };
+  // 音色参考样本上传/移除（仅人物资产）
+  const auUp = $('#amAudioUp');
+  if (auUp) auUp.onclick = async () => {
+    try {
+      const f = await pickFile('audio/*'); if (!f) return;
+      toast('上传声音样本中…');
+      const uped = await uploadFile(f, 'voice-char-' + (a.id || uid()));
+      audio = uped.url; a.audio = audio;
+      closeModal(); openAssetModal(kind, a, onSave);   // 重开弹窗刷新预览
+      toast('声音样本已上传', 'ok');
+    } catch (e) { toast('上传失败：' + (e.message || e), 'err'); }
+  };
+  const auRm = $('#amAudioRm');
+  if (auRm) auRm.onclick = () => { audio = ''; a.audio = ''; closeModal(); openAssetModal(kind, a, onSave); };
   $('#amCancel').onclick = closeModal;
   $('#amSave').onclick = () => {
     const n = $('#amName').value.trim();
     if (!n) return toast('请填写名称', 'err');
     a.name = n; a.desc = $('#amDesc').value.trim(); a.img = img;
-    if (isChar) a.voice = $('#amVoice').value;
+    if (isChar) { a.voice = $('#amVoice').value; a.audio = audio; }
     if (!asset) {
       if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
       if (!S.project.assets[kind]) S.project.assets[kind] = [];
@@ -976,8 +997,8 @@ function collectShotRefs(s) {
   const A = S.project.assets || {};
   const refs = [];
   (A.characters || []).forEach(c => {
-    if ((s.characterIds || []).includes(c.id) && c.img) refs.push({ url: S.api.abs(c.img), kind: '人物', name: c.name, desc: c.desc || '' });
-  });
+            if ((s.characterIds || []).includes(c.id) && c.img) refs.push({ url: S.api.abs(c.img), kind: '人物', name: c.name, desc: c.desc || '', audio: c.audio || '' });
+          });
   const sc = (A.scenes || []).find(c => c.id === s.sceneId);
   if (sc && sc.img) refs.push({ url: S.api.abs(sc.img), kind: '场景', name: sc.name, desc: sc.desc || '' });
   (A.props || []).forEach(c => {
@@ -1001,11 +1022,11 @@ function buildVideoPrompt(s, refs) {
     else if (r.kind === '道具') { defs.push('@Image' + n + ' 是道具「' + r.name + '」' + d); bind.push('「' + r.name + '」外观与 @Image' + n + ' 严格一致'); }
     else defs.push('@Image' + n + ' 是本镜头构图参考');
   });
-  // ② 动作：剧情 + 台词（口型同步）
+  // ② 动作：剧情 + 台词（口型同步；参考音频仅提供音色，内容以剧本台词为准）
   const parts = [];
   if (defs.length) parts.push(defs.join('；') + '。');
   parts.push('动作：' + (s.text || ''));
-  if (s.dialogue) parts.push('台词：角色清晰念出「' + s.dialogue + '」，口型与台词精准同步（lip sync），语气贴合情绪');
+  if (s.dialogue) parts.push('台词：角色用参考音频中该角色的音色（voice timbre）清晰念出台词「' + s.dialogue + '」——参考音频仅决定说话音色与说话方式，台词内容必须严格按剧本文字念出，不得照搬参考音频中的原有语句；口型与所念台词精准同步（lip sync），语气贴合剧情情绪');
   // ③ 镜头：单一运镜 + 景别（避免冲突指令导致画面拉扯）
   parts.push('镜头：中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换');
   // ④ 风格：光照 + 质感锚点
@@ -1273,7 +1294,10 @@ async function doGenShotVideo(id, duration, isFL) {
       refUrls = capped.map(r => r.url);
       prompt = buildVideoPrompt(s, capped);
     }
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls, s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
+    // 声音来源：优先绑定人物资产上传的音色参考样本；无则用分镜配音（TTS/自由上传）
+    const voiceRef = refs.find(r => r.kind === '人物' && r.audio);
+    const audioUrl = voiceRef ? S.api.abs(voiceRef.audio) : (s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls, audioUrl);
     clearInterval(S.videoGenTimer);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
     // 视频历史记录：每次生成成功追加到 videos 数组（最新在前）
