@@ -26,5 +26,8 @@ contextBridge.exposeInMainWorld('mochi', {
 
   // 系统
   showInFolder: (p) => ipcRenderer.invoke('shell:showItem', p),
-  openExternal: (u) => ipcRenderer.invoke('shell:open', u)
+  openExternal: (u) => ipcRenderer.invoke('shell:open', u),
+
+  // 局域网服务器发现（UDP 扫描）
+  discoverServers: () => ipcRenderer.invoke('lan:discover')
 });

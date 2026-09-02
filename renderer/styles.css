@@ -357,6 +357,12 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .vp-style-item { padding: 8px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg3); color: var(--text2); font-size: 12px; cursor: pointer; text-align: center; transition: all .15s; }
 .vp-style-item:hover { border-color: var(--accent); color: var(--text); }
 .vp-style-item.active { border-color: var(--accent); background: rgba(99,102,241,.15); color: var(--text); font-weight: 600; }
+.server-scan-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.server-scan-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg3); color: var(--text2); font-size: 12px; cursor: pointer; text-align: left; transition: all .15s; }
+.server-scan-item:hover { border-color: var(--accent); color: var(--text); }
+.server-scan-item.active { border-color: var(--accent); background: rgba(99,102,241,.15); color: var(--text); }
+.server-scan-item .s-srv-url { font-family: ui-monospace, monospace; font-weight: 600; }
+.server-scan-item .s-srv-info { font-size: 10px; color: var(--text3); }
 .vp-video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-height: 320px; overflow-y: auto; }
 .vp-video-card { position: relative; border-radius: 8px; overflow: hidden; cursor: pointer; border: 1px solid var(--line); background: #000; aspect-ratio: 16/9; transition: border-color .15s; }
 .vp-video-card:hover { border-color: var(--accent); }

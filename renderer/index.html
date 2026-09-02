@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>乾坤设计 - AI漫剧协作平台</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20260902b">
 </head>
 <body>
 
@@ -16,6 +16,8 @@
     <div class="form-row">
       <label>服务器地址</label>
       <input id="loginServer" placeholder="例如 http://192.168.1.100:3210">
+      <button class="btn small ghost" id="btnScanServer" style="margin-top:6px;width:100%">🔍 扫描同网络下的服务器</button>
+      <div id="serverScanResult" class="server-scan-list"></div>
     </div>
     <div class="login-tabs">
       <button class="login-tab active" data-mode="user">校验码登录</button>

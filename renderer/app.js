@@ -159,6 +159,38 @@ function initLogin() {
   $('#loginCode').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('#loginAdminPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   $('#btnLogin').onclick = doLogin;
+  // 扫描同网络下的服务器
+  const scanBtn = $('#btnScanServer');
+  if (scanBtn) scanBtn.onclick = scanServers;
+}
+
+// 局域网服务器自动发现（需 Electron 桌面端，浏览器无此能力）
+async function scanServers() {
+  const btn = $('#btnScanServer'), box = $('#serverScanResult');
+  if (!btn || !box) return;
+  if (!window.mochi || !mochi.discoverServers) {
+    box.innerHTML = '<div class="hint">仅桌面版支持扫描。请手动填写服务器地址。</div>'; return;
+  }
+  btn.disabled = true; btn.textContent = '🔍 扫描中…（约 2.5 秒）';
+  box.innerHTML = '<div class="hint">扫描中…</div>';
+  try {
+    const list = await mochi.discoverServers();
+    if (!list.length) {
+      box.innerHTML = '<div class="hint warn">未发现同网络下的服务器。请确认服务器已启动，或手动填写地址。</div>';
+    } else {
+      box.innerHTML = '<div class="hint" style="margin-bottom:6px">发现 ' + list.length + ' 台服务器，点击即填入：</div>' +
+        list.map(s => `<button class="server-scan-item" data-url="${esc(s.http)}">
+          <span class="s-srv-url">${esc(s.http)}</span>
+          <span class="s-srv-info">${s.projects || 0} 项目 · ${s.episodes || 0} 分集 · v${esc(s.version || '')}</span>
+        </button>`).join('');
+      box.querySelectorAll('[data-url]').forEach(b => b.onclick = () => {
+        $('#loginServer').value = b.dataset.url;
+        box.querySelectorAll('.server-scan-item').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+      });
+    }
+  } catch (e) { box.innerHTML = '<div class="hint warn">扫描失败：' + esc(e.message || '') + '</div>'; }
+  finally { btn.disabled = false; btn.textContent = '🔍 扫描同网络下的服务器'; }
 }
 async function doLogin() {
   const base = $('#loginServer').value.trim().replace(/\/+$/, '');

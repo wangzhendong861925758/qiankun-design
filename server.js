@@ -5,6 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 
@@ -571,8 +572,50 @@ function createServer(dataDir, port = 3210) {
     }
   }
 
-  server.listen(port);
-  return { server, app, wss, port, dataDir, close: () => server.close() };
+  server.listen(port, '0.0.0.0');
+
+  // 局域网自动发现：UDP 广播定时宣告本机 HTTP 地址，客户端扫描即可一键连接
+  let udpSock = null;
+  try {
+    const dgram = require('dgram');
+    udpSock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    udpSock.on('error', () => { try { udpSock.close(); } catch (e) {} });
+    udpSock.on('message', (msg, rinfo) => {
+      // 收到客户端探测请求 → 立即回送本机宣告
+      if (msg.toString() === 'QK_DISCOVER') sendBroadcast();
+    });
+    udpSock.bind(3211, '0.0.0.0', () => {
+      udpSock.setBroadcast(true);
+      setInterval(sendBroadcast, 5000);   // 每 5 秒主动广播一次
+      sendBroadcast();
+    });
+  } catch (e) { console.warn('UDP discover disabled:', e.message); }
+
+  function getLanIP() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const n of (nets[name] || [])) {
+        if (n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254')) return n.address;
+      }
+    }
+    return '127.0.0.1';
+  }
+
+  function sendBroadcast() {
+    if (!udpSock) return;
+    try {
+      const ip = getLanIP();
+      const payload = JSON.stringify({
+        app: 'qiankun-design', version: APP_VERSION,
+        http: 'http://' + ip + ':' + port, ip, port,
+        projects: db.projects.length, episodes: db.episodes.length,
+        ts: Date.now()
+      });
+      udpSock.send(payload, 3211, '255.255.255.255');
+    } catch (e) { }
+  }
+
+  return { server, app, wss, port, dataDir, close: () => { try { udpSock && udpSock.close(); } catch (e) {} server.close(); } };
 }
 
 module.exports = { createServer, ADMINS, APP_VERSION };

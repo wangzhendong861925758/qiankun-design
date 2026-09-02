@@ -264,6 +264,33 @@ ipcMain.handle('app:info', () => ({ version: app.getVersion(), isPackaged: app.i
 ipcMain.handle('shell:showItem', (e, p) => { shell.showItemInFolder(p); return { ok: true }; });
 ipcMain.handle('shell:open', (e, u) => { shell.openExternal(u); return { ok: true }; });
 
+// ---------- 局域网服务器发现（UDP 探测） ----------
+ipcMain.handle('lan:discover', async () => {
+  const dgram = require('dgram');
+  return await new Promise((resolve) => {
+    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    const found = new Map();
+    let done = false;
+    const finish = () => { if (done) return; done = true; try { sock.close(); } catch (e) {} resolve(Array.from(found.values())); };
+    sock.on('error', () => finish());
+    sock.on('message', (msg, rinfo) => {
+      try {
+        const j = JSON.parse(msg.toString());
+        if (j && j.app === 'qiankun-design' && j.http) {
+          found.set(j.http, j);
+        }
+      } catch (e) {}
+    });
+    sock.bind(3211, '0.0.0.0', () => {
+      sock.setBroadcast(true);
+      // 主动发送探测请求，触发服务端立即回应
+      sock.send('QK_DISCOVER', 3211, '255.255.255.255');
+      setTimeout(finish, 2500);   // 2.5秒后收集完毕
+    });
+    setTimeout(finish, 3000);   // 兜底
+  });
+});
+
 // ---------- 自动更新（修复：检查完必有反馈） ----------
 let _updater = null;
 function initUpdater() {
