@@ -350,13 +350,16 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .vp-dur-range { margin-left: auto; font-size: 10px; color: var(--text3); }
 .vp-dur-row { display: flex; align-items: center; gap: 8px; }
 .vp-aspect-row { display: flex; gap: 8px; }
-.vp-history-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
-.vp-hist-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg3); cursor: pointer; font-size: 11px; color: var(--text2); text-align: left; width: 100%; transition: border-color .15s; }
-.vp-hist-item:hover { border-color: var(--accent); }
-.vp-hist-item.active { border-color: var(--accent); background: rgba(99,102,241,.1); color: var(--text); }
-.vp-hist-idx { font-weight: 700; color: var(--accent); flex-shrink: 0; min-width: 28px; }
-.vp-hist-time { flex: 1; }
-.vp-hist-dur { color: var(--text3); flex-shrink: 0; }
+.vp-video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-height: 320px; overflow-y: auto; }
+.vp-video-card { position: relative; border-radius: 8px; overflow: hidden; cursor: pointer; border: 1px solid var(--line); background: #000; aspect-ratio: 16/9; transition: border-color .15s; }
+.vp-video-card:hover { border-color: var(--accent); }
+.vp-video-card video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.vp-card-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 22px; color: #fff; background: rgba(0,0,0,.25); transition: background .15s; }
+.vp-video-card:hover .vp-card-play { background: rgba(0,0,0,.1); }
+.vp-card-badge { position: absolute; top: 4px; left: 4px; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.65); color: #fff; }
+.vp-card-dl { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 5px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; text-decoration: none; }
+.vp-card-dl:hover { background: var(--accent); }
+.vp-card-time { position: absolute; bottom: 4px; right: 4px; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.65); color: #ddd; }
 .vp-dur-min, .vp-dur-max { font-size: 11px; color: var(--text3); flex-shrink: 0; }
 .vp-slider { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--bg5); outline: none; cursor: pointer; }
 .vp-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; cursor: pointer; }

@@ -23,7 +23,7 @@ const S = {
   sel: { text: '', image: '', video: '' },
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
-  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null, vpSelIdx: 0
+  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null
 };
 const VOICES = [
   ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
@@ -985,25 +985,34 @@ function collectShotRefs(s) {
   });
   return refs.slice(0, 9);
 }
-// 视频提示词：按火山方舟/Seedance 2.0 官方提示词规范，用「图片N」指代参考图
-// （编号与参考图数组顺序严格一致；官方教程均使用"图片1/图片2"中文指代，而非 @ImageN）
+// 视频提示词：按 Seedance 2.0 官方提示词规范（主体→动作→镜头→风格→约束）
+// - 前置元素权重更高：参考图身份声明放最前，用官方 @ImageN 语法显式绑定
+// - 单一运镜、物理细节、光照氛围提升真实感
+// - 一致性约束 + 负面约束锁住资产还原度
+// - 台词触发原生口型同步（Seedance 2.0 支持有声视频）
 function buildVideoPrompt(s, refs) {
-  // 先声明各参考图身份，模型据此建立图与角色的对应关系
+  // ① 主体：先声明各参考图身份（模型对靠前元素权重更高）
   const defs = [], bind = [];
   refs.forEach((r, i) => {
     const n = i + 1;
-    const d = r.desc ? '（' + r.desc + '）' : '';
-    if (r.kind === '人物') { defs.push('图片' + n + '为人物「' + r.name + '」' + d); bind.push('画面中「' + r.name + '」的形象、服装、发型与图片' + n + '严格一致'); }
-    else if (r.kind === '场景') { defs.push('图片' + n + '为场景「' + r.name + '」' + d); bind.push('画面环境背景为图片' + n + '中的场景，空间布局与色调严格一致'); }
-    else if (r.kind === '道具') { defs.push('图片' + n + '为道具「' + r.name + '」' + d); bind.push('「' + r.name + '」的外观与图片' + n + '严格一致'); }
-    else defs.push('图片' + n + '为本镜头分镜构图参考');
+    const d = r.desc ? '，' + r.desc : '';
+    if (r.kind === '人物') { defs.push('@Image' + n + ' 是人物「' + r.name + '」' + d); bind.push('「' + r.name + '」全程面部、发型、服装与 @Image' + n + ' 完全一致（same person across frames, maintain face consistency）'); }
+    else if (r.kind === '场景') { defs.push('@Image' + n + ' 是场景「' + r.name + '」' + d); bind.push('画面环境即 @Image' + n + ' 中的场景，空间布局、色调光照严格一致'); }
+    else if (r.kind === '道具') { defs.push('@Image' + n + ' 是道具「' + r.name + '」' + d); bind.push('「' + r.name + '」外观与 @Image' + n + ' 严格一致'); }
+    else defs.push('@Image' + n + ' 是本镜头构图参考');
   });
+  // ② 动作：剧情 + 台词（口型同步）
   const parts = [];
-  if (defs.length) parts.push(defs.join('，') + '。');
-  parts.push('剧情：' + (s.text || ''));
-  if (s.dialogue) parts.push('台词：「' + s.dialogue + '」');
-  if (bind.length) parts.push(bind.join('，'));
-  parts.push('高质量动漫风格，画面连贯自然');
+  if (defs.length) parts.push(defs.join('；') + '。');
+  parts.push('动作：' + (s.text || ''));
+  if (s.dialogue) parts.push('台词：角色清晰念出「' + s.dialogue + '」，口型与台词精准同步（lip sync），语气贴合情绪');
+  // ③ 镜头：单一运镜 + 景别（避免冲突指令导致画面拉扯）
+  parts.push('镜头：中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换');
+  // ④ 风格：光照 + 质感锚点
+  parts.push('风格：高质量动漫风格，柔和自然光，色彩通透，皮肤衣物材质细节清晰，物理运动真实（发丝、衣摆随动作自然摆动）');
+  // ⑤ 约束：一致性 + 负面约束
+  if (bind.length) parts.push('一致性约束：' + bind.join('；'));
+  parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲，无快速变焦和跳切，背景物体保持稳定');
   return parts.join('。');
 }
 async function genFrameImage(id, field) {
@@ -1137,10 +1146,6 @@ function renderVideoPanel() {
   const first = s.firstImg || s.storyboardImg;
   const vAspect = S.videoAspect || S.data.aspect || '16:9';
   const videos = s.videos || [];
-  // 当前选中查看的历史视频索引（默认0=最新）
-  if (S.vpSelIdx === undefined || S.vpSelIdx >= videos.length) S.vpSelIdx = 0;
-  const selVideo = videos[S.vpSelIdx] || videos[0];
-  const selUrl = selVideo ? S.api.abs(selVideo.url) : url;
 
   el.innerHTML = `
     <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
@@ -1150,23 +1155,12 @@ function renderVideoPanel() {
       const all = refs.map(r => `<span class="vp-ref-tag">${r.kind}·${esc(r.name)}</span>`).join('');
       return `<div class="vp-sec"><div class="vp-sec-title">参考资产（严格按图生成）</div><div class="vp-refs">${all}${!isFL && first ? '<span class="vp-ref-tag">分镜图</span>' : ''}</div></div>`;
     })()}
-    ${selUrl ? `
+    ${url ? `
     <div class="vp-video-box">
-      <video src="${esc(selUrl)}" controls preload="metadata"></video>
+      <video src="${esc(url)}" controls preload="metadata"></video>
     </div>
     <div class="vp-dl-row">
-      <a class="btn primary" href="${esc(selUrl)}" download="shot-${idx}-${S.vpSelIdx + 1}.mp4" target="_blank">⬇ 下载视频</a>
-    </div>` : ''}
-    ${videos.length > 1 ? `
-    <div class="vp-sec">
-      <div class="vp-sec-title">历史视频（共 ${videos.length} 个）</div>
-      <div class="vp-history-list">
-        ${videos.map((v, i) => `<button class="vp-hist-item ${i === S.vpSelIdx ? 'active' : ''}" data-vi="${i}">
-          <span class="vp-hist-idx">#${i + 1}</span>
-          <span class="vp-hist-time">${new Date(v.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-          <span class="vp-hist-dur">${v.duration || '?'}s</span>
-        </button>`).join('')}
-      </div>
+      <a class="btn primary" href="${esc(url)}" download="shot-${idx}-latest.mp4" target="_blank">⬇ 下载视频</a>
     </div>` : ''}
     <div class="vp-sec">
       <div class="vp-sec-title">视频比例</div>
@@ -1195,6 +1189,23 @@ function renderVideoPanel() {
     </div>` : ''}
     ${err ? `<div class="vp-sec vp-error"><b>❌ 生成失败</b><div class="vp-err-msg">${esc(err.msg)}</div></div>` : ''}
     ${isFL ? `<div class="vp-hint ${flReady ? '' : 'warn'}">${flReady ? '首尾帧模式：将使用本镜首帧 + 尾帧两张图片生成' : '⚠ 首尾帧模式：需先提供首帧与尾帧两张图片（可在分镜中 AI 生成或上传）'}</div>` : ''}
+    ${videos.length ? `
+    <div class="vp-sec">
+      <div class="vp-sec-title">本镜已生成视频（${videos.length} 个）· 点击放大播放</div>
+      <div class="vp-video-grid">
+        ${videos.map((v, i) => {
+          const u = S.api.abs(v.url);
+          const t = new Date(v.ts || Date.now()).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+          return `<div class="vp-video-card" data-vplay="${i}" title="点击放大播放">
+            <video src="${esc(u)}" preload="metadata" muted></video>
+            <div class="vp-card-play">▶</div>
+            <span class="vp-card-badge">#${i + 1} · ${v.duration || '?'}s</span>
+            <a class="vp-card-dl" href="${esc(u)}" download="shot-${idx}-${i + 1}.mp4" title="下载此视频" onclick="event.stopPropagation()">⬇</a>
+            <span class="vp-card-time">${t}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : ''}
   `;
 
   const slider = el.querySelector('#vpDur');
@@ -1207,9 +1218,18 @@ function renderVideoPanel() {
     S.videoAspect = btn.dataset.vr;
     renderVideoPanel();
   });
-  el.querySelectorAll('[data-vi]').forEach(btn => btn.onclick = () => {
-    S.vpSelIdx = +btn.dataset.vi;
-    renderVideoPanel();
+  // 点击历史视频卡片 → 弹窗放大播放 + 下载
+  el.querySelectorAll('[data-vplay]').forEach(card => card.onclick = (e) => {
+    if (e.target.closest('.vp-card-dl')) return;   // 下载按钮不触发播放
+    const i = +card.dataset.vplay;
+    const v = videos[i]; if (!v) return;
+    const u = S.api.abs(v.url);
+    openModal(`视频播放 · 第 ${idx} 镜 · #${i + 1}`, `
+      <video src="${esc(u)}" controls autoplay style="width:100%;max-height:68vh;background:#000;border-radius:8px;display:block"></video>
+      <div class="vp-dl-row" style="margin-top:12px">
+        <a class="btn primary" href="${esc(u)}" download="shot-${idx}-${i + 1}.mp4">⬇ 下载此视频</a>
+        <span class="hint" style="align-self:center">${v.duration || '?'}s · ${new Date(v.ts || Date.now()).toLocaleString('zh-CN')}</span>
+      </div>`, true);
   });
   const genBtn = el.querySelector('#vpGen');
   if (genBtn) genBtn.onclick = () => doGenShotVideo(s.id, s.durSel || cur, isFL);
@@ -1253,7 +1273,7 @@ async function doGenShotVideo(id, duration, isFL) {
       refUrls = capped.map(r => r.url);
       prompt = buildVideoPrompt(s, capped);
     }
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls);
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls, s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
     clearInterval(S.videoGenTimer);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
     // 视频历史记录：每次生成成功追加到 videos 数组（最新在前）

@@ -221,7 +221,7 @@ function createServer(dataDir, port = 3210) {
     try {
       if (!fs.existsSync(fp)) return '';
       const ext = path.extname(fp).toLowerCase();
-      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }[ext] || 'image/png';
+      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg' }[ext] || 'image/png';
       return 'data:' + mime + ';base64,' + fs.readFileSync(fp).toString('base64');
     } catch { return ''; }
   }
@@ -286,7 +286,7 @@ function createServer(dataDir, port = 3210) {
   // 视频生成：提交任务 → 轮询 → 下载保存（支持首尾帧模式）
   app.post('/api/ai/video', async (req, res) => {
     if (!needUser(req, res)) return;
-    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages } = req.body || {};
+    const { projectId, modelId, prompt, aspect, firstFrame, lastFrame, duration, refImages, audio } = req.body || {};
     const m = getModel(projectId, 'video', modelId);
     if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
     try {
@@ -298,6 +298,8 @@ function createServer(dataDir, port = 3210) {
       const refs = rawRefs.map(refToDataUrl).filter(Boolean);
       const ff = firstFrame ? refToDataUrl(firstFrame) : '';
       const lf = lastFrame ? refToDataUrl(lastFrame) : '';
+      // 参考音频（配音）：官方约束"音频不可单独输入，至少配合1张参考图"，无图时不传
+      const au = (audio && (refs.length || ff)) ? refToDataUrl(audio) : '';
 
       // ---- 火山方舟/Seedance 2.0 原生格式（content 数组，多参考图支持最完整）----
       // 官方规范：POST {base}/contents/generations/tasks
@@ -308,12 +310,16 @@ function createServer(dataDir, port = 3210) {
       const cArr = [{ type: 'text', text }];
       if (refs.length) refs.forEach(u => cArr.push({ type: 'image_url', image_url: { url: u }, role: 'reference_image' }));
       else { if (ff) cArr.push({ type: 'image_url', image_url: { url: ff }, role: 'first_frame' }); if (lf) cArr.push({ type: 'image_url', image_url: { url: lf }, role: 'last_frame' }); }
+      // 参考音频（配音）→ 口型同步：官方 content 结构 {type:'audio_url', audio_url:{url}, role:'reference_audio'}
+      if (au) cArr.push({ type: 'audio_url', audio_url: { url: au }, role: 'reference_audio' });
       const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '480p', watermark: false };
+      if (au) arkBody.generate_audio = true;
 
       // ---- new-api / OpenAI 风格 flat 格式（兜底）----
       const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur, resolution: '480p', size: ratio === '16:9' ? '864x480' : '480x864', quality: '480p' };
       if (refs.length) { flatBody.reference_image_urls = refs; flatBody.reference_images = refs; flatBody.input_reference_role = 'reference_image'; }
       else { if (ff) { flatBody.image = ff; flatBody.image_url = ff; flatBody.first_frame_url = ff; } if (lf) { flatBody.image_tail = lf; flatBody.last_frame_url = lf; } }
+      if (au) { flatBody.audio_url = au; flatBody.reference_audio_urls = [au]; flatBody.generate_audio = true; }
 
       // 端点+格式自适应：方舟原生优先；网关无此端点(404/405)时降级 new-api 风格
       const rootBase = base.replace(/\/(v\d+|api\/v\d+)\/?$/, '');
@@ -328,7 +334,7 @@ function createServer(dataDir, port = 3210) {
       // 诊断日志：确认多模态参考真的发出（base64 以 data: 开头）+ 比例与时长
       console.log('[video] 提交', m.model, '| ratio', ratio, '| 时长', dur + 's', '| 参考图', refs.length, '张:',
         refs.map(u => u.slice(0, 40) + (u.length > 40 ? '…(' + u.length + '字符)' : '')),
-        '| 首帧', ff ? '有' : '无', '| 尾帧', lf ? '有' : '无');
+        '| 首帧', ff ? '有' : '无', '| 尾帧', lf ? '有' : '无', '| 配音', au ? '有(' + au.length + '字符)' : '无');
       for (const t of tries) {
         submit = await fetchTimeout(t.ep,
           { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(t.body) }, 300000);
