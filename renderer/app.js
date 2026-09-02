@@ -23,7 +23,7 @@ const S = {
   sel: { text: '', image: '', video: '' },
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
-  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null
+  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null, vpSelIdx: 0
 };
 const VOICES = [
   ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
@@ -1136,6 +1136,11 @@ function renderVideoPanel() {
   const flReady = (s.firstImg || s.storyboardImg) && s.lastImg;
   const first = s.firstImg || s.storyboardImg;
   const vAspect = S.videoAspect || S.data.aspect || '16:9';
+  const videos = s.videos || [];
+  // 当前选中查看的历史视频索引（默认0=最新）
+  if (S.vpSelIdx === undefined || S.vpSelIdx >= videos.length) S.vpSelIdx = 0;
+  const selVideo = videos[S.vpSelIdx] || videos[0];
+  const selUrl = selVideo ? S.api.abs(selVideo.url) : url;
 
   el.innerHTML = `
     <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
@@ -1145,12 +1150,23 @@ function renderVideoPanel() {
       const all = refs.map(r => `<span class="vp-ref-tag">${r.kind}·${esc(r.name)}</span>`).join('');
       return `<div class="vp-sec"><div class="vp-sec-title">参考资产（严格按图生成）</div><div class="vp-refs">${all}${!isFL && first ? '<span class="vp-ref-tag">分镜图</span>' : ''}</div></div>`;
     })()}
-    ${url ? `
+    ${selUrl ? `
     <div class="vp-video-box">
-      <video src="${esc(url)}" controls preload="metadata"></video>
+      <video src="${esc(selUrl)}" controls preload="metadata"></video>
     </div>
     <div class="vp-dl-row">
-      <a class="btn primary" href="${esc(url)}" download="shot-${idx}.mp4" target="_blank">⬇ 下载视频</a>
+      <a class="btn primary" href="${esc(selUrl)}" download="shot-${idx}-${S.vpSelIdx + 1}.mp4" target="_blank">⬇ 下载视频</a>
+    </div>` : ''}
+    ${videos.length > 1 ? `
+    <div class="vp-sec">
+      <div class="vp-sec-title">历史视频（共 ${videos.length} 个）</div>
+      <div class="vp-history-list">
+        ${videos.map((v, i) => `<button class="vp-hist-item ${i === S.vpSelIdx ? 'active' : ''}" data-vi="${i}">
+          <span class="vp-hist-idx">#${i + 1}</span>
+          <span class="vp-hist-time">${new Date(v.ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+          <span class="vp-hist-dur">${v.duration || '?'}s</span>
+        </button>`).join('')}
+      </div>
     </div>` : ''}
     <div class="vp-sec">
       <div class="vp-sec-title">视频比例</div>
@@ -1189,6 +1205,10 @@ function renderVideoPanel() {
   };
   el.querySelectorAll('[data-vr]').forEach(btn => btn.onclick = () => {
     S.videoAspect = btn.dataset.vr;
+    renderVideoPanel();
+  });
+  el.querySelectorAll('[data-vi]').forEach(btn => btn.onclick = () => {
+    S.vpSelIdx = +btn.dataset.vi;
     renderVideoPanel();
   });
   const genBtn = el.querySelector('#vpGen');
@@ -1236,7 +1256,10 @@ async function doGenShotVideo(id, duration, isFL) {
     const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls);
     clearInterval(S.videoGenTimer);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
-    updShot(id, { videoUrl: r.url, duration: r.duration || duration });
+    // 视频历史记录：每次生成成功追加到 videos 数组（最新在前）
+    const videos = (s.videos || []).slice();
+    videos.unshift({ url: r.url, duration: r.duration || duration, ts: Date.now() });
+    updShot(id, { videoUrl: r.url, duration: r.duration || duration, videos });
     S.videoGen = null; S.videoErr = null;
     renderShots(); renderVideoPanel();
     toast('视频已生成', 'ok');

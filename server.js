@@ -302,14 +302,16 @@ function createServer(dataDir, port = 3210) {
       // ---- 火山方舟/Seedance 2.0 原生格式（content 数组，多参考图支持最完整）----
       // 官方规范：POST {base}/contents/generations/tasks
       // content: [{type:'text',text}, {type:'image_url',image_url:{url},role:'reference_image'|'first_frame'|'last_frame'}]
-      const text = String(prompt || '').slice(0, 4000);
+      // resolution 为顶层参数，可选 480p/720p/1080p/4k，默认 720p
+      const rawText = String(prompt || '').slice(0, 4000);
+      const text = rawText;  // 提示词原文
       const cArr = [{ type: 'text', text }];
       if (refs.length) refs.forEach(u => cArr.push({ type: 'image_url', image_url: { url: u }, role: 'reference_image' }));
       else { if (ff) cArr.push({ type: 'image_url', image_url: { url: ff }, role: 'first_frame' }); if (lf) cArr.push({ type: 'image_url', image_url: { url: lf }, role: 'last_frame' }); }
       const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '480p', watermark: false };
 
       // ---- new-api / OpenAI 风格 flat 格式（兜底）----
-      const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur, resolution: '480p', size: ratio === '16:9' ? '864x480' : '480x864' };
+      const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur, resolution: '480p', size: ratio === '16:9' ? '864x480' : '480x864', quality: '480p' };
       if (refs.length) { flatBody.reference_image_urls = refs; flatBody.reference_images = refs; flatBody.input_reference_role = 'reference_image'; }
       else { if (ff) { flatBody.image = ff; flatBody.image_url = ff; flatBody.first_frame_url = ff; } if (lf) { flatBody.image_tail = lf; flatBody.last_frame_url = lf; } }
 
@@ -332,7 +334,8 @@ function createServer(dataDir, port = 3210) {
           { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(t.body) }, 300000);
         if (submit.ok) { epUsed = t.ep; break; }
         lastErr = '提交失败 HTTP ' + submit.status + ' @ ' + t.ep + ': ' + (await submit.text()).slice(0, 300);
-        if (submit.status !== 404 && submit.status !== 405) throw new Error(lastErr);
+        // 404/405=端点不存在；500/502/503=网关上游不可用 → 均继续尝试下个端点
+        if (![404, 405, 500, 502, 503].includes(submit.status)) throw new Error(lastErr);
       }
       if (!submit || !submit.ok) throw new Error(lastErr);
       const sd = await submit.json();
