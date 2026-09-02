@@ -56,13 +56,17 @@ function autoStartServer() {
       try {
         const { createServer } = require('./server');
         const dir = path.join(app.getPath('userData'), 'server-data');
-        embedded = createServer(dir, port);
+        const inst = createServer(dir, port);
+        await inst.ready;   // 等端口真正监听成功（listen 异步失败会 reject，如端口被占/被系统保留）
+        embedded = inst;
         console.log('内嵌协作服务已自动启动: http://localhost:' + port);
         break;
       } catch (e) {
-        embedded = null; // 端口被占用则尝试下一个
+        embedded = null; // 端口被占用/被保留 → 尝试下一个
+        console.warn('端口 ' + port + ' 启动失败，尝试下一个：' + (e && e.code || e.message));
       }
     }
+    if (!embedded) console.warn('内嵌协作服务启动失败：3210-3213 端口均不可用');
   })();
 }
 app.on('window-all-closed', () => app.quit());
@@ -267,27 +271,49 @@ ipcMain.handle('shell:open', (e, u) => { shell.openExternal(u); return { ok: tru
 // ---------- 局域网服务器发现（UDP 探测） ----------
 ipcMain.handle('lan:discover', async () => {
   const dgram = require('dgram');
+  const ipToInt = ip => ip.split('.').reduce((s, x) => ((s << 8) + parseInt(x, 10)) >>> 0, 0);
+  const intToIp = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+  // 探测目标：受限广播 + 每个网卡的定向广播（多网卡环境必须逐网卡发送）
+  const targets = new Set(['255.255.255.255']);
+  const myIPs = new Set(['127.0.0.1']);
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const n of (nets[name] || [])) {
+      if (n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254')) {
+        myIPs.add(n.address);
+        if (n.netmask) {
+          const bcast = intToIp((ipToInt(n.address) & ipToInt(n.netmask)) | (~ipToInt(n.netmask) >>> 0));
+          if (bcast !== n.address) targets.add(bcast);
+        }
+      }
+    }
+  }
   return await new Promise((resolve) => {
-    const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    // 关键：绑定随机端口收发，不绑 3211（3211 已被本机服务器 UDP 占用，同机双 socket 会抢占数据包）
+    const sock = dgram.createSocket({ type: 'udp4' });
     const found = new Map();
     let done = false;
     const finish = () => { if (done) return; done = true; try { sock.close(); } catch (e) {} resolve(Array.from(found.values())); };
     sock.on('error', () => finish());
-    sock.on('message', (msg, rinfo) => {
+    sock.on('message', (msg) => {
       try {
         const j = JSON.parse(msg.toString());
         if (j && j.app === 'qiankun-design' && j.http) {
+          // 本机服务器 → 用 localhost 地址（绕开防火墙对局域网 IP 的拦截，连接更稳）
+          if (j.ip && myIPs.has(j.ip)) j.http = 'http://localhost:' + j.port;
           found.set(j.http, j);
         }
       } catch (e) {}
     });
-    sock.bind(3211, '0.0.0.0', () => {
+    sock.bind(() => {
       sock.setBroadcast(true);
-      // 主动发送探测请求，触发服务端立即回应
-      sock.send('QK_DISCOVER', 3211, '255.255.255.255');
-      setTimeout(finish, 2500);   // 2.5秒后收集完毕
+      // 3 轮探测（间隔 800ms）防 UDP 丢包
+      const probe = () => { for (const t of targets) { try { sock.send('QK_DISCOVER', 3211, t); } catch (e) {} } };
+      probe();
+      const t1 = setTimeout(probe, 800), t2 = setTimeout(probe, 1600);
+      setTimeout(() => { clearTimeout(t1); clearTimeout(t2); finish(); }, 2500);   // 2.5 秒后收集完毕
     });
-    setTimeout(finish, 3000);   // 兜底
+    setTimeout(finish, 3500);   // 兜底
   });
 });
 

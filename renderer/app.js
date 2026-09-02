@@ -178,7 +178,7 @@ async function scanServers() {
   try {
     const list = await mochi.discoverServers();
     if (!list.length) {
-      box.innerHTML = '<div class="hint warn">未发现同网络下的服务器。请确认服务器已启动，或手动填写地址。</div>';
+      box.innerHTML = '<div class="hint warn">未发现同网络下的服务器。请逐项确认：<br>① 双方电脑均已打开本软件；<br>② 双方在同一网络（同一WiFi/路由器）；<br>③ Windows 防火墙已放行本软件（首次启动弹窗时须点"允许访问"，若错过：控制面板 → Windows Defender 防火墙 → 允许应用通过防火墙 → 勾选乾坤设计）。<br>仍未发现时，可在对方软件左下角查看本机服务器地址手动填入。</div>';
     } else {
       box.innerHTML = '<div class="hint" style="margin-bottom:6px">发现 ' + list.length + ' 台服务器，点击即填入：</div>' +
         list.map(s => `<button class="server-scan-item" data-url="${esc(s.http)}">
@@ -224,7 +224,7 @@ async function doLogin() {
   } catch (e) {
     const msg = String(e.message || e);
     hint.textContent = /failed to fetch|networkerror|load failed/i.test(msg)
-      ? '无法连接服务器，请检查地址是否正确'
+      ? '无法连接服务器。请确认：① 本机软件已启动完成（首次启动约需几秒）；② 地址正确（本机默认 http://localhost:3210，连他人填其局域网IP）；③ 若连他人，需对方软件已打开且防火墙放行'
       : (msg || '连接失败');
   } finally {
     $('#btnLogin').disabled = false; $('#btnLogin').textContent = '登 录';

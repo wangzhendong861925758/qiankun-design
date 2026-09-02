@@ -48,17 +48,18 @@ function createServer(dataDir, port = 3210) {
     episodes: loadJSON('episodes.json', []),
     stats: loadJSON('stats.json', [])
   };
-  // 节点唯一 ID：联邦同步用于识别资产来源节点；首次启动生成并持久化
-  if (!db.server.nodeId) {
-    db.server.nodeId = 'node_' + uid();
-    saveKey('server', 'server.json');
-  }
   const saveTimers = {};
   function saveKey(key, file) {
     clearTimeout(saveTimers[key]);
     saveTimers[key] = setTimeout(() => {
       try { fs.writeFileSync(path.join(dataDir, file), JSON.stringify(db[key], null, 2)); } catch (e) { console.error('save', key, e.message); }
     }, 250);
+  }
+  // 节点唯一 ID：联邦同步用于识别资产来源节点；首次启动生成并持久化
+  // （注意：必须在 saveKey/saveTimers 定义之后调用，否则触发 const 暂时性死区 ReferenceError）
+  if (!db.server.nodeId) {
+    db.server.nodeId = 'node_' + uid();
+    saveKey('server', 'server.json');
   }
   const epSaveTimers = {};
   function loadEpisode(id) {
@@ -521,6 +522,9 @@ function createServer(dataDir, port = 3210) {
   // ---------- WebSocket 实时协作 ----------
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
+  // ws 库会把 http server 的 error（如端口占用 EADDRINUSE）转发到 wss 上；不监听会触发
+  // "Unhandled 'error' event" 导致整个进程崩溃（端口退让逻辑也会失效），必须吞掉并仅记录日志
+  wss.on('error', e => console.warn('WS server error:', (e && e.code) || (e && e.message) || e));
   const rooms = new Map(); // projectId -> Set<ws>
   function send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch (e) { } }
   function broadcastRoom(pid, obj, exceptClientId) {
@@ -634,6 +638,11 @@ function createServer(dataDir, port = 3210) {
     }
   }
 
+  // 端口监听就绪（异步失败也 reject，让调用方能正确退让端口，避免"静默失败"）
+  const ready = new Promise((resolve, reject) => {
+    server.once('listening', () => resolve());
+    server.once('error', err => { try { server.close(); } catch (e) { } reject(err); });
+  });
   server.listen(port, '0.0.0.0');
 
   // 局域网自动发现：UDP 广播定时宣告本机 HTTP 地址，客户端扫描即可一键连接
@@ -643,8 +652,8 @@ function createServer(dataDir, port = 3210) {
     udpSock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     udpSock.on('error', () => { try { udpSock.close(); } catch (e) {} });
     udpSock.on('message', (msg, rinfo) => {
-      // 收到客户端探测请求 → 立即回送本机宣告
-      if (msg.toString() === 'QK_DISCOVER') sendBroadcast();
+      // 收到客户端探测请求 → 单播定向回送请求者（客户端不监听 3211，必须回送到其随机端口）
+      if (msg.toString() === 'QK_DISCOVER') sendAnnounce(rinfo.address, rinfo.port);
     });
     udpSock.bind(3211, '0.0.0.0', () => {
       udpSock.setBroadcast(true);
@@ -663,22 +672,49 @@ function createServer(dataDir, port = 3210) {
     return '127.0.0.1';
   }
 
+  const ipToInt = ip => ip.split('.').reduce((s, x) => ((s << 8) + parseInt(x, 10)) >>> 0, 0);
+  const intToIp = n => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+  // 广播目标：受限广播 + 每个网卡的定向广播（如 192.168.1.255）。
+  // 多网卡环境（VMware/WSL/VPN 虚拟网卡）下 255.255.255.255 只从默认路由网卡发出，必须逐网卡定向广播
+  function broadcastTargets() {
+    const set = new Set(['255.255.255.255']);
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const n of (nets[name] || [])) {
+        if (n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254') && n.netmask) {
+          const bcast = intToIp((ipToInt(n.address) & ipToInt(n.netmask)) | (~ipToInt(n.netmask) >>> 0));
+          if (bcast !== n.address) set.add(bcast);
+        }
+      }
+    }
+    return Array.from(set);
+  }
+
+  function makePayload() {
+    const ip = getLanIP();
+    return JSON.stringify({
+      app: 'qiankun-design', version: APP_VERSION,
+      http: 'http://' + ip + ':' + port, ip, port,
+      nodeId: db.server.nodeId,                    // 联邦同步识别节点
+      projects: db.projects.length, episodes: db.episodes.length,
+      ts: Date.now()
+    });
+  }
+
   function sendBroadcast() {
     if (!udpSock) return;
     try {
-      const ip = getLanIP();
-      const payload = JSON.stringify({
-        app: 'qiankun-design', version: APP_VERSION,
-        http: 'http://' + ip + ':' + port, ip, port,
-        nodeId: db.server.nodeId,                    // 联邦同步识别节点
-        projects: db.projects.length, episodes: db.episodes.length,
-        ts: Date.now()
-      });
-      udpSock.send(payload, 3211, '255.255.255.255');
+      const payload = makePayload();
+      for (const t of broadcastTargets()) udpSock.send(payload, 3211, t);
     } catch (e) { }
   }
 
-  return { server, app, wss, port, dataDir, close: () => { try { udpSock && udpSock.close(); } catch (e) {} server.close(); } };
+  function sendAnnounce(host, port2) {
+    if (!udpSock) return;
+    try { udpSock.send(makePayload(), port2, host); } catch (e) { }
+  }
+
+  return { server, app, wss, port, dataDir, ready, close: () => { try { udpSock && udpSock.close(); } catch (e) {} try { server.close(); } catch (e) {} } };
 }
 
 module.exports = { createServer, ADMINS, APP_VERSION };
