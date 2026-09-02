@@ -1237,8 +1237,8 @@ function renderVideoPanel() {
 
   el.innerHTML = `
     <div class="vp-top-row">
-      <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
-      <button class="btn small vp-style-btn" id="vpStyleBtn" title="选择视频风格（生成时自动生效）">🎨 风格：${esc(S.videoStyle || '默认动漫')}</button>
+      <button class="btn small primary vp-style-btn" id="vpStyleBtn" title="选择视频风格（40种，生成时自动生效）">🎨 风格选择：${esc(S.videoStyle || '默认动漫')}</button>
+      <div class="vp-shot-tag">第 ${idx} 镜</div>
     </div>
     ${S.videoStyle ? `<div class="vp-style-cur">当前风格「${esc(S.videoStyle)}」将自动应用于本镜及所有分镜的视频生成</div>` : ''}
     ${(() => {
