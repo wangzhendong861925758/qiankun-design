@@ -983,22 +983,28 @@ function collectShotRefs(s) {
   (A.props || []).forEach(c => {
     if ((s.propIds || []).includes(c.id) && c.img) refs.push({ url: S.api.abs(c.img), kind: '道具', name: c.name, desc: c.desc || '' });
   });
-  return refs.slice(0, 6);
+  return refs.slice(0, 9);
 }
-// 视频提示词：用 @ImageN 显式绑定参考图（编号与 reference_image_urls 数组顺序严格一致）
+// 视频提示词：按火山方舟/Seedance 2.0 官方提示词规范，用「图片N」指代参考图
+// （编号与参考图数组顺序严格一致；官方教程均使用"图片1/图片2"中文指代，而非 @ImageN）
 function buildVideoPrompt(s, refs) {
-  const parts = ['剧情：' + (s.text || '')];
-  if (s.dialogue) parts.push('台词：「' + s.dialogue + '」');
+  // 先声明各参考图身份，模型据此建立图与角色的对应关系
+  const defs = [], bind = [];
   refs.forEach((r, i) => {
     const n = i + 1;
     const d = r.desc ? '（' + r.desc + '）' : '';
-    if (r.kind === '人物') parts.push('@Image' + n + ' 为人物「' + r.name + '」' + d + '，画面中人物形象必须与该参考图严格一致');
-    else if (r.kind === '场景') parts.push('@Image' + n + ' 为场景「' + r.name + '」' + d + '，画面环境背景必须与该参考图严格一致');
-    else if (r.kind === '道具') parts.push('@Image' + n + ' 为道具「' + r.name + '」' + d + '，道具外观必须与该参考图严格一致');
-    else parts.push('@Image' + n + ' 为分镜画面构图参考，整体构图与其保持一致');
+    if (r.kind === '人物') { defs.push('图片' + n + '为人物「' + r.name + '」' + d); bind.push('画面中「' + r.name + '」的形象、服装、发型与图片' + n + '严格一致'); }
+    else if (r.kind === '场景') { defs.push('图片' + n + '为场景「' + r.name + '」' + d); bind.push('画面环境背景为图片' + n + '中的场景，空间布局与色调严格一致'); }
+    else if (r.kind === '道具') { defs.push('图片' + n + '为道具「' + r.name + '」' + d); bind.push('「' + r.name + '」的外观与图片' + n + '严格一致'); }
+    else defs.push('图片' + n + '为本镜头分镜构图参考');
   });
+  const parts = [];
+  if (defs.length) parts.push(defs.join('，') + '。');
+  parts.push('剧情：' + (s.text || ''));
+  if (s.dialogue) parts.push('台词：「' + s.dialogue + '」');
+  if (bind.length) parts.push(bind.join('，'));
   parts.push('高质量动漫风格，画面连贯自然');
-  return parts.join('；') + '。';
+  return parts.join('。');
 }
 async function genFrameImage(id, field) {
   const s = shotById(id); if (!s) return;
@@ -1211,7 +1217,7 @@ async function doGenShotVideo(id, duration, isFL) {
     } else {
       const refs = collectShotRefs(s);
       if (first) refs.push({ url: S.api.abs(first), kind: '分镜图', name: '分镜图', desc: '' });
-      const capped = refs.slice(0, 6);
+      const capped = refs.slice(0, 9);
       refUrls = capped.map(r => r.url);
       prompt = buildVideoPrompt(s, capped);
     }

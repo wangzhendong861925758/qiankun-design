@@ -291,36 +291,47 @@ function createServer(dataDir, port = 3210) {
     if (!m) return res.status(400).json({ error: '该项目未配置视频模型，请联系管理员' });
     try {
       const base = apiBase(m);
-      const body = { model: m.model, prompt: String(prompt || '').slice(0, 4000) };
-      if (aspect === '16:9') { body.aspect_ratio = '16:9'; body.ratio = '16:9'; } else { body.aspect_ratio = '9:16'; body.ratio = '9:16'; }
-      const dur = Number(duration);
-      if (dur > 0) { body.duration = dur; body.duration_seconds = dur; body.seconds = String(dur); }
-      // 多模态参考模式与首尾帧模式互斥：
-      // 有参考图（绑定的人物/场景/道具/分镜图）→ reference_image_urls 多图参考（本地图转 base64 data URL）
-      // 否则 → 首帧 image / 尾帧 image_tail
-      const rawRefs = Array.isArray(refImages) ? refImages.slice(0, 6) : [];
+      const dur = Math.max(4, Math.min(15, Number(duration) || 5));   // Seedance 2.0 时长范围 [4,15] 秒
+      const ratio = aspect === '9:16' ? '9:16' : '16:9';               // 方舟宽高比字段为 ratio
+      // 参考图（本地图转 base64 data URL；外部公网 URL 原样）—— 多模态参考模式与首尾帧模式互斥
+      const rawRefs = Array.isArray(refImages) ? refImages.slice(0, 9) : [];
       const refs = rawRefs.map(refToDataUrl).filter(Boolean);
-      if (refs.length) {
-        body.reference_image_urls = refs;   // new-api/火山兼容多参考图字段（支持公网 URL 与 base64 data URL）
-        body.reference_images = refs;       // 部分网关使用此字段名
-        body.input_reference_role = 'reference_image';
-      } else {
-        const ff = firstFrame ? refToDataUrl(firstFrame) : '';
-        const lf = lastFrame ? refToDataUrl(lastFrame) : '';
-        if (ff) { body.image = ff; body.image_url = ff; body.first_frame_url = ff; }      // 首帧参考
-        if (lf) { body.image_tail = lf; body.last_frame_url = lf; }   // 尾帧参考
-      }
-      // 不同网关的视频端点不同：依次尝试（new-api 标准 /videos、OpenAI 风格 /videos/generations 等）
-      const endpoints = ['/videos', '/videos/generations', '/video/generations'];
-      let submit = null, epUsed = endpoints[0], lastErr = '';
-      // 参考图诊断日志：确认多模态参考是否真的发出（base64 以 data: 开头）
-      console.log('[video] 提交', m.model, '| 参考图', refs.length, '张:', refs.map(u => u.slice(0, 40) + (u.length > 40 ? '…(' + u.length + '字符)' : '')),
-        '| 首帧', body.first_frame_url ? '有' : '无', '| 尾帧', body.last_frame_url ? '有' : '无');
-      for (const ep of endpoints) {
-        submit = await fetchTimeout(base + ep,
-          { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
-        if (submit.ok) { epUsed = ep; break; }
-        lastErr = '提交失败 HTTP ' + submit.status + ': ' + (await submit.text()).slice(0, 300);
+      const ff = firstFrame ? refToDataUrl(firstFrame) : '';
+      const lf = lastFrame ? refToDataUrl(lastFrame) : '';
+
+      // ---- 火山方舟/Seedance 2.0 原生格式（content 数组，多参考图支持最完整）----
+      // 官方规范：POST {base}/contents/generations/tasks
+      // content: [{type:'text',text}, {type:'image_url',image_url:{url},role:'reference_image'|'first_frame'|'last_frame'}]
+      const text = String(prompt || '').slice(0, 4000);
+      const cArr = [{ type: 'text', text }];
+      if (refs.length) refs.forEach(u => cArr.push({ type: 'image_url', image_url: { url: u }, role: 'reference_image' }));
+      else { if (ff) cArr.push({ type: 'image_url', image_url: { url: ff }, role: 'first_frame' }); if (lf) cArr.push({ type: 'image_url', image_url: { url: lf }, role: 'last_frame' }); }
+      const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '1080p', watermark: false };
+
+      // ---- new-api / OpenAI 风格 flat 格式（兜底）----
+      const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur };
+      if (refs.length) { flatBody.reference_image_urls = refs; flatBody.reference_images = refs; flatBody.input_reference_role = 'reference_image'; }
+      else { if (ff) { flatBody.image = ff; flatBody.image_url = ff; flatBody.first_frame_url = ff; } if (lf) { flatBody.image_tail = lf; flatBody.last_frame_url = lf; } }
+
+      // 端点+格式自适应：方舟原生优先；网关无此端点(404/405)时降级 new-api 风格
+      const rootBase = base.replace(/\/(v\d+|api\/v\d+)\/?$/, '');
+      const tries = [
+        { ep: base + '/contents/generations/tasks', body: arkBody },                 // base 已带 /v3 或 /v1 的方舟风格网关
+        { ep: rootBase + '/api/v3/contents/generations/tasks', body: arkBody },      // 方舟官方裸域名
+        { ep: base + '/videos', body: flatBody },                                    // new-api 标准
+        { ep: base + '/videos/generations', body: flatBody },
+        { ep: base + '/video/generations', body: flatBody }
+      ];
+      let submit = null, epUsed = '', lastErr = '';
+      // 诊断日志：确认多模态参考真的发出（base64 以 data: 开头）+ 比例与时长
+      console.log('[video] 提交', m.model, '| ratio', ratio, '| 时长', dur + 's', '| 参考图', refs.length, '张:',
+        refs.map(u => u.slice(0, 40) + (u.length > 40 ? '…(' + u.length + '字符)' : '')),
+        '| 首帧', ff ? '有' : '无', '| 尾帧', lf ? '有' : '无');
+      for (const t of tries) {
+        submit = await fetchTimeout(t.ep,
+          { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(t.body) }, 300000);
+        if (submit.ok) { epUsed = t.ep; break; }
+        lastErr = '提交失败 HTTP ' + submit.status + ' @ ' + t.ep + ': ' + (await submit.text()).slice(0, 300);
         if (submit.status !== 404 && submit.status !== 405) throw new Error(lastErr);
       }
       if (!submit || !submit.ok) throw new Error(lastErr);
@@ -328,6 +339,8 @@ function createServer(dataDir, port = 3210) {
       // 兼容多种网关返回结构提取任务ID
       const pickVid = d => d.id || d.task_id || (d.data && d.data[0] && d.data[0].id) || (d.videos && d.videos[0] && d.videos[0].id) || '';
       const pickUrl = d => {
+        // 方舟原生结构：{status, content:{video_url}}
+        if (d.content && d.content.video_url) return d.content.video_url;
         const flat = d.url || d.video_url || d.result || (typeof d.output === 'string' ? d.output : '');
         if (flat) return flat;
         if (d.data && d.data[0] && (d.data[0].url || d.data[0].video_url)) return d.data[0].url || d.data[0].video_url;
@@ -338,10 +351,10 @@ function createServer(dataDir, port = 3210) {
       // 同步直接返回 url 的情况
       let url = pickUrl(sd);
       if (!url && vid) {
-        // 任务制：轮询（最长20分钟）
+        // 任务制：轮询（最长20分钟）；查询端点 = 提交端点 + /{id}（方舟与 new-api 均如此）
         for (let i = 0; i < 240; i++) {
           await new Promise(r => setTimeout(r, 5000));
-          const pr = await fetchTimeout(base + epUsed + '/' + vid, { headers: aiHeaders(m) }, 120000);
+          const pr = await fetchTimeout(epUsed + '/' + vid, { headers: aiHeaders(m) }, 120000);
           if (!pr.ok) continue;
           const pd = await pr.json();
           const st = pd.status || pd.task_status || (pd.data && pd.data[0] && pd.data[0].status) || '';
