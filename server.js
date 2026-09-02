@@ -306,10 +306,10 @@ function createServer(dataDir, port = 3210) {
       const cArr = [{ type: 'text', text }];
       if (refs.length) refs.forEach(u => cArr.push({ type: 'image_url', image_url: { url: u }, role: 'reference_image' }));
       else { if (ff) cArr.push({ type: 'image_url', image_url: { url: ff }, role: 'first_frame' }); if (lf) cArr.push({ type: 'image_url', image_url: { url: lf }, role: 'last_frame' }); }
-      const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '1080p', watermark: false };
+      const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '480p', watermark: false };
 
       // ---- new-api / OpenAI 风格 flat 格式（兜底）----
-      const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur };
+      const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur, resolution: '480p', size: ratio === '16:9' ? '864x480' : '480x864' };
       if (refs.length) { flatBody.reference_image_urls = refs; flatBody.reference_images = refs; flatBody.input_reference_role = 'reference_image'; }
       else { if (ff) { flatBody.image = ff; flatBody.image_url = ff; flatBody.first_frame_url = ff; } if (lf) { flatBody.image_tail = lf; flatBody.last_frame_url = lf; } }
 
