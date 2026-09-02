@@ -204,6 +204,27 @@ function createServer(dataDir, port = 3210) {
   });
 
   // ---------- AI 代理（模型凭证仅存在服务端，不暴露给用户端） ----------
+  // 参考图转公网可用的形式：本地文件（/assets/xx.png 或 localhost 地址）→ base64 data URL；外部 http URL 原样返回
+  // 原因：外部 AI 网关无法访问本机 localhost 地址，直接传 localhost URL 会被网关忽略，退化为纯文生视频
+  function refToDataUrl(u) {
+    if (!u || typeof u !== 'string') return '';
+    if (/^data:/i.test(u)) return u;                       // 已是 data URL
+    let p = '';
+    if (/^https?:\/\//i.test(u)) {
+      if (!/\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(u)) return u;  // 外部公网 URL 直接用
+      try { p = decodeURIComponent(new URL(u).pathname); } catch { return ''; }
+    } else if (u.startsWith('/')) {
+      p = u;                                               // 本地相对路径
+    } else return '';
+    if (!/^\/assets\/[\w.-]+$/.test(p)) return '';         // 仅允许 assets 目录，防路径穿越
+    const fp = path.join(dataDir, 'assets', path.basename(p));
+    try {
+      if (!fs.existsSync(fp)) return '';
+      const ext = path.extname(fp).toLowerCase();
+      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }[ext] || 'image/png';
+      return 'data:' + mime + ';base64,' + fs.readFileSync(fp).toString('base64');
+    } catch { return ''; }
+  }
   function getModel(pid, kind, id) {
     const p = db.projects.find(x => x.id === pid);
     if (!p) return null;
@@ -271,24 +292,30 @@ function createServer(dataDir, port = 3210) {
     try {
       const base = apiBase(m);
       const body = { model: m.model, prompt: String(prompt || '').slice(0, 4000) };
-      if (aspect === '16:9') body.aspect_ratio = '16:9'; else body.aspect_ratio = '9:16';
+      if (aspect === '16:9') { body.aspect_ratio = '16:9'; body.ratio = '16:9'; } else { body.aspect_ratio = '9:16'; body.ratio = '9:16'; }
       const dur = Number(duration);
       if (dur > 0) { body.duration = dur; body.duration_seconds = dur; body.seconds = String(dur); }
       // 多模态参考模式与首尾帧模式互斥：
-      // 有参考图（绑定的人物/场景/道具/分镜图）→ reference_image_urls 多图参考
+      // 有参考图（绑定的人物/场景/道具/分镜图）→ reference_image_urls 多图参考（本地图转 base64 data URL）
       // 否则 → 首帧 image / 尾帧 image_tail
-      const refs = Array.isArray(refImages) ? refImages.filter(u => typeof u === 'string' && /^https?:\/\//.test(u)).slice(0, 6) : [];
+      const rawRefs = Array.isArray(refImages) ? refImages.slice(0, 6) : [];
+      const refs = rawRefs.map(refToDataUrl).filter(Boolean);
       if (refs.length) {
-        body.reference_image_urls = refs;   // OpenAI 兼容多参考图字段
-        body.reference_images = refs;       // 部分网关（如 seedance2 满血版）使用此字段名
-        body.reference_mode = 'image_reference';
+        body.reference_image_urls = refs;   // new-api/火山兼容多参考图字段（支持公网 URL 与 base64 data URL）
+        body.reference_images = refs;       // 部分网关使用此字段名
+        body.input_reference_role = 'reference_image';
       } else {
-        if (firstFrame) body.image = firstFrame;      // 首帧参考
-        if (lastFrame) { body.image_tail = lastFrame; body.last_frame_url = lastFrame; }   // 尾帧参考
+        const ff = firstFrame ? refToDataUrl(firstFrame) : '';
+        const lf = lastFrame ? refToDataUrl(lastFrame) : '';
+        if (ff) { body.image = ff; body.image_url = ff; body.first_frame_url = ff; }      // 首帧参考
+        if (lf) { body.image_tail = lf; body.last_frame_url = lf; }   // 尾帧参考
       }
-      // 不同网关的视频端点不同：依次尝试 /videos/generations 与 /video/generations
-      const endpoints = ['/videos/generations', '/video/generations'];
+      // 不同网关的视频端点不同：依次尝试（new-api 标准 /videos、OpenAI 风格 /videos/generations 等）
+      const endpoints = ['/videos', '/videos/generations', '/video/generations'];
       let submit = null, epUsed = endpoints[0], lastErr = '';
+      // 参考图诊断日志：确认多模态参考是否真的发出（base64 以 data: 开头）
+      console.log('[video] 提交', m.model, '| 参考图', refs.length, '张:', refs.map(u => u.slice(0, 40) + (u.length > 40 ? '…(' + u.length + '字符)' : '')),
+        '| 首帧', body.first_frame_url ? '有' : '无', '| 尾帧', body.last_frame_url ? '有' : '无');
       for (const ep of endpoints) {
         submit = await fetchTimeout(base + ep,
           { method: 'POST', headers: aiHeaders(m), body: JSON.stringify(body) }, 300000);
@@ -301,7 +328,7 @@ function createServer(dataDir, port = 3210) {
       // 兼容多种网关返回结构提取任务ID
       const pickVid = d => d.id || d.task_id || (d.data && d.data[0] && d.data[0].id) || (d.videos && d.videos[0] && d.videos[0].id) || '';
       const pickUrl = d => {
-        const flat = d.url || d.video_url || (typeof d.output === 'string' ? d.output : '');
+        const flat = d.url || d.video_url || d.result || (typeof d.output === 'string' ? d.output : '');
         if (flat) return flat;
         if (d.data && d.data[0] && (d.data[0].url || d.data[0].video_url)) return d.data[0].url || d.data[0].video_url;
         if (d.videos && d.videos[0] && (d.videos[0].url || d.videos[0].video_url)) return d.videos[0].url || d.videos[0].video_url;
