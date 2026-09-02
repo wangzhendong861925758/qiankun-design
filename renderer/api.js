@@ -56,8 +56,10 @@ class Api {
   // 联邦合并：把收集到的其他节点数据推送到本机服务器（按 id 去重，只新增本机没有的）
   federateMerge(payload) { return apiFetch(this.base, '/federate/merge', { method: 'POST', headers: this.headers(), body: JSON.stringify(payload) }); }
   // 拉取远程资产原图并转 base64（不通过 Api.headers，因为返回的是二进制）
-  async federateFetchBlobBase64(base, assetId) {
-    const r = await fetch(base.replace(/\/+$/, '') + '/federate/asset/' + encodeURIComponent(assetId) + '/blob');
+  // field: 'img'（默认）或 'audio'——指定拉取资产的哪个文件
+  async federateFetchBlobBase64(base, assetId, field) {
+    const q = field ? '?field=' + encodeURIComponent(field) : '';
+    const r = await fetch(base.replace(/\/+$/, '') + '/federate/asset/' + encodeURIComponent(assetId) + '/blob' + q);
     if (!r.ok) throw new Error('拉取原图失败 HTTP ' + r.status);
     const buf = await r.arrayBuffer();
     // 二进制 → base64

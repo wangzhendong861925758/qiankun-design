@@ -409,8 +409,10 @@ function createServer(dataDir, port = 3210) {
     });
   });
   // 联邦拉取资产原图：根据资产ID在所有项目中查找并返回二进制
+  // field 参数指定拉取哪个字段的文件：img（默认）或 audio——修复 audio 永远拉到图片文件的 bug
   app.get('/federate/asset/:id/blob', (req, res) => {
     const aid = req.params.id;
+    const field = req.query.field === 'audio' ? 'audio' : 'img';
     let asset = null;
     for (const p of db.projects) {
       for (const k of ['characters', 'scenes', 'props', 'others', 'sfx']) {
@@ -421,7 +423,7 @@ function createServer(dataDir, port = 3210) {
     }
     if (!asset) return res.status(404).json({ error: '资产不存在' });
     // img / audio 字段为 /assets/xxx.png 路径
-    const imgPath = asset.img || asset.audio || '';
+    const imgPath = asset[field] || '';
     if (!imgPath || !/^\/assets\/[\w.-]+$/.test(imgPath)) return res.status(404).json({ error: '原图不存在' });
     const fp = path.join(dataDir, 'assets', path.basename(imgPath));
     if (!fs.existsSync(fp)) return res.status(404).json({ error: '原图文件不存在' });

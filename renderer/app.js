@@ -1544,49 +1544,70 @@ async function syncFederationAssets() {
     S.federation.peers = peers;
     if (!peers.length) { S.federation.syncing = false; renderFederationBar(); return; }
 
-    // 收集本机已有资产ID集合
-    const localIds = new Set();
     const kinds = ['characters', 'scenes', 'props', 'others', 'sfx'];
-    kinds.forEach(k => (((S.project.assets && S.project.assets[k]) || [])).forEach(a => localIds.add(a.id)));
+    if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
 
-    // 并行向每个节点请求该项目资产元数据
-    const remoteList = [];   // [{ peer, kind, asset }]
-    const seenIds = new Set();   // 远程去重（多个节点都有同一资产时只取一次）
+    // ---- 步骤1：检测本机已有资产的文件是否真实存在（HEAD 本机静态路由） ----
+    // 背景：联邦合并 /federate/merge 只带来资产元数据（含 /assets/xxx 路径），文件本体仍在其他设备。
+    // 若只按 asset.id 去重会误判"本机已有"，导致图片不显示、生成视频时参考图不绑定。
+    const localIds = new Set();
+    kinds.forEach(k => (((S.project.assets[k]) || [])).forEach(a => { if (a.id) localIds.add(a.id); }));
+    const fileExists = async u => {
+      if (!u || !/^\/assets\//.test(u)) return true;   // data: 外链等非本机路径不检测
+      try { const r = await fetch(S.api.abs(u), { method: 'HEAD' }); return r.ok; } catch (e) { return true; }   // 检测异常按存在处理，避免误拉
+    };
+    const brokenAssets = [];   // 本机元数据存在但文件缺失 → 需补拉文件并原地更新 URL
+    for (const k of kinds) {
+      for (const a of (S.project.assets[k] || [])) {
+        const imgOk = await fileExists(a.img);
+        const audioOk = await fileExists(a.audio);
+        if (!imgOk || !audioOk) brokenAssets.push({ asset: a, needImg: !imgOk, needAudio: !audioOk });
+      }
+    }
+
+    // ---- 步骤2：并行向每个节点请求该项目资产元数据，找出本机没有的新资产 ----
+    const remoteList = [];   // [{ kind, asset }]
+    const seenIds = new Set(localIds);   // 远程去重（多个节点都有同一资产时只取一次）
     await Promise.all(peers.map(async peer => {
       try {
         const d = await S.api.federateProjectAssets(peer.http, pid);
         if (!d || !d.assets) return;
         kinds.forEach(k => (((d.assets[k]) || [])).forEach(a => {
-          if (!localIds.has(a.id) && !seenIds.has(a.id)) {
-            remoteList.push({ peer, kind: k, asset: a });
-            seenIds.add(a.id);
-          }
+          if (a.id && !seenIds.has(a.id)) { remoteList.push({ kind: k, asset: a }); seenIds.add(a.id); }
         }));
       } catch (e) { console.warn('federate fetch failed', peer.http, e.message); }
     }));
 
-    S.federation.progress.total = remoteList.length;
+    S.federation.progress = { cur: 0, total: remoteList.length + brokenAssets.length };
     renderFederationBar();
 
-    // 逐个拉取原图并上传到本机
-    let added = false;
+    // 从某个 peer 拉取资产文件（按字段 img/audio）并上传到本机，返回新 URL；全部失败返回 null
+    const fetchAndUpload = async (assetId, field, defExt) => {
+      for (const peer of peers) {
+        try {
+          const b64 = await S.api.federateFetchBlobBase64(peer.http, assetId, field);
+          const up = await S.api.upload('fed-' + field + '-' + assetId + defExt, b64);
+          return up.url;
+        } catch (e) { /* 试下一个 peer */ }
+      }
+      return null;
+    };
+
+    let added = false, fixed = 0;
+
+    // ---- 步骤3：拉取远程新资产（元数据 + 文件本体），新增到本机 ----
     for (const item of remoteList) {
       try {
-        const { peer, kind, asset } = item;
+        const { kind, asset } = item;
         const newAsset = Object.assign({}, asset);   // 复制一份，避免引用远程对象
         if (asset.img && /^\/assets\//.test(asset.img)) {
-          const b64 = await S.api.federateFetchBlobBase64(peer.http, asset.id);
-          const ext = (asset.img.match(/\.\w+$/) || ['.png'])[0];
-          const up = await S.api.upload('fed-' + asset.id + ext, b64);
-          newAsset.img = up.url;
+          const u = await fetchAndUpload(asset.id, 'img', (asset.img.match(/\.\w+$/) || ['.png'])[0]);
+          if (u) newAsset.img = u;
         }
         if (asset.audio && /^\/assets\//.test(asset.audio)) {
-          const b64 = await S.api.federateFetchBlobBase64(peer.http, asset.id);
-          const ext = (asset.audio.match(/\.\w+$/) || ['.mp3'])[0];
-          const up = await S.api.upload('fed-aud-' + asset.id + ext, b64);
-          newAsset.audio = up.url;
+          const u = await fetchAndUpload(asset.id, 'audio', (asset.audio.match(/\.\w+$/) || ['.mp3'])[0]);
+          if (u) newAsset.audio = u;
         }
-        if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
         if (!S.project.assets[kind]) S.project.assets[kind] = [];
         S.project.assets[kind].push(newAsset);
         added = true;
@@ -1598,12 +1619,27 @@ async function syncFederationAssets() {
       }
     }
 
-    if (added) {
+    // ---- 步骤4：补齐本机缺文件的资产：拉取文件 → 上传本机 → 原地更新 img/audio URL ----
+    for (const { asset, needImg, needAudio } of brokenAssets) {
+      try {
+        if (needImg) {
+          const u = await fetchAndUpload(asset.id, 'img', (String(asset.img).match(/\.\w+$/) || ['.png'])[0]);
+          if (u) { asset.img = u; fixed++; }
+        }
+        if (needAudio) {
+          const u = await fetchAndUpload(asset.id, 'audio', (String(asset.audio).match(/\.\w+$/) || ['.mp3'])[0]);
+          if (u) { asset.audio = u; fixed++; }
+        }
+      } catch (e) { /* 静默 */ }
+      finally { S.federation.progress.cur++; renderFederationBar(); }
+    }
+
+    if (added || fixed) {
       // 持久化到本机服务器 + 广播给本机其他在线客户端
       try { await S.api.assetsSave(S.project.id, S.project.assets); } catch (e) {}
       emitOp({ kind: 'assets-update', assets: S.project.assets });
       if (S.page === 'editor') { renderShots(); renderCharPanel(); }
-      toast('联邦同步完成：新增 ' + remoteList.length + ' 个资产', 'ok');
+      toast('联邦同步完成：新增 ' + remoteList.length + ' 个资产，补齐 ' + fixed + ' 个缺失文件', 'ok');
     }
   } catch (e) {
     console.warn('federation sync error', e.message);
