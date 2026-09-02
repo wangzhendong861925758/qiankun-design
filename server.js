@@ -43,11 +43,16 @@ function createServer(dataDir, port = 3210) {
   const epFile = id => path.join(dataDir, 'episodes', id + '.json');
   function loadJSON(f, def) { try { return JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf-8')); } catch (e) { return def; } }
   const db = {
-    server: loadJSON('server.json', { codes: [], users: [] }),
+    server: loadJSON('server.json', { codes: [], users: [], nodeId: '' }),
     projects: loadJSON('projects.json', []),
     episodes: loadJSON('episodes.json', []),
     stats: loadJSON('stats.json', [])
   };
+  // 节点唯一 ID：联邦同步用于识别资产来源节点；首次启动生成并持久化
+  if (!db.server.nodeId) {
+    db.server.nodeId = 'node_' + uid();
+    saveKey('server', 'server.json');
+  }
   const saveTimers = {};
   function saveKey(key, file) {
     clearTimeout(saveTimers[key]);
@@ -383,6 +388,57 @@ function createServer(dataDir, port = 3210) {
     } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
   });
 
+  // ---------- 联邦同步：跨节点资产共享 ----------
+  // 设计：每台机器作为自己的服务器；本组接口供同网络其他节点拉取本项目资产元数据与原图
+  // 客户端进入项目时通过 UDP 发现的节点列表，并行拉取所有节点的该项目资产，
+  // 把本机没有的资产原图下载并上传到本机服务器，达到"上传即全员本地缓存"效果
+  app.get('/federate/info', (req, res) => {
+    res.json({
+      nodeId: db.server.nodeId, version: APP_VERSION,
+      projects: db.projects.length, episodes: db.episodes.length
+    });
+  });
+  // 返回本节点某项目的资产元数据（不含原图二进制；原图按需拉取）
+  app.get('/federate/projects/:pid/assets', (req, res) => {
+    const p = db.projects.find(x => x.id === req.params.pid);
+    if (!p) return res.status(404).json({ error: '项目不存在' });
+    res.json({
+      nodeId: db.server.nodeId, projectId: p.id,
+      assets: p.assets || emptyAssets()
+    });
+  });
+  // 联邦拉取资产原图：根据资产ID在所有项目中查找并返回二进制
+  app.get('/federate/asset/:id/blob', (req, res) => {
+    const aid = req.params.id;
+    let asset = null;
+    for (const p of db.projects) {
+      for (const k of ['characters', 'scenes', 'props', 'others', 'sfx']) {
+        const found = ((p.assets && p.assets[k]) || []).find(a => a.id === aid);
+        if (found) { asset = found; break; }
+      }
+      if (asset) break;
+    }
+    if (!asset) return res.status(404).json({ error: '资产不存在' });
+    // img / audio 字段为 /assets/xxx.png 路径
+    const imgPath = asset.img || asset.audio || '';
+    if (!imgPath || !/^\/assets\/[\w.-]+$/.test(imgPath)) return res.status(404).json({ error: '原图不存在' });
+    const fp = path.join(dataDir, 'assets', path.basename(imgPath));
+    if (!fs.existsSync(fp)) return res.status(404).json({ error: '原图文件不存在' });
+    res.sendFile(fp);
+  });
+  // 联邦拉取任意 /assets/xxx 路径的文件（兜底）
+  app.get('/federate/blob', (req, res) => {
+    const u = String(req.query.url || '');
+    if (!/^\/assets\/[\w.-]+$/.test(u)) return res.status(400).json({ error: '非法路径' });
+    const fp = path.join(dataDir, 'assets', path.basename(u));
+    if (!fs.existsSync(fp)) return res.status(404).json({ error: '文件不存在' });
+    res.sendFile(fp);
+  });
+  // 联邦统计接口：返回本节点统计供管理端聚合
+  app.get('/federate/stats', (req, res) => {
+    res.json({ nodeId: db.server.nodeId, stats: db.stats });
+  });
+
   // ---------- 生成统计 ----------
   app.post('/api/stats', (req, res) => {
     const u = needUser(req, res); if (!u) return;
@@ -524,6 +580,12 @@ function createServer(dataDir, port = 3210) {
         if (!pid) return;
         try { applyOp(pid, m.op || {}, ws.info.user); } catch (e) { console.error('op', e.message); }
         broadcastRoom(pid, { t: 'op', op: m.op, from: { userId: ws.info.user.id, name: ws.info.user.name }, clientId: ws.info.clientId }, ws.info.clientId);
+      } else if (m.t === 'asset:new' || m.t === 'asset:delete') {
+        // 联邦：资产增删事件转发给同项目其他在线客户端（不落地本节点数据，
+        // 由接收方根据来源 nodeId 决定是否拉取原图缓存到本机）
+        const pid = ws.info.projectId;
+        if (!pid) return;
+        broadcastRoom(pid, Object.assign({}, m, { from: ws.info.user.name, fromClientId: ws.info.clientId }), ws.info.clientId);
       }
     });
     ws.on('close', () => { const pid = ws.info && ws.info.projectId; leaveRoom(ws); broadcastPresence(pid); });
@@ -608,6 +670,7 @@ function createServer(dataDir, port = 3210) {
       const payload = JSON.stringify({
         app: 'qiankun-design', version: APP_VERSION,
         http: 'http://' + ip + ':' + port, ip, port,
+        nodeId: db.server.nodeId,                    // 联邦同步识别节点
         projects: db.projects.length, episodes: db.episodes.length,
         ts: Date.now()
       });

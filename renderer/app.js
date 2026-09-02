@@ -24,7 +24,9 @@ const S = {
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
   stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null,
-  videoStyle: (function(){ try { return localStorage.getItem('qk_video_style') || ''; } catch(e){ return ''; } })()
+  videoStyle: (function(){ try { return localStorage.getItem('qk_video_style') || ''; } catch(e){ return ''; } })(),
+  // 联邦同步：每台机器作为自己的服务器，进入项目时自动从其他节点拉取资产元数据+原图缓存到本机
+  federation: { syncing: false, progress: { cur: 0, total: 0 }, peers: [], lastSyncTs: 0, fedTimer: null }
 };
 const VOICES = [
   ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
@@ -373,6 +375,10 @@ async function openEpisode(id) {
     // 首次进入（无分镜且无剧本）弹出解析剧本页；再次进入保留上次操作，直接进编辑器
     if (!S.data.shots.length && !S.data.script) showSetup();
     else enterEditorPage();
+    // 进入分集后启动联邦资产同步（一次性 + 每 30 秒兜底，确保跨节点资产自动可见可调用）
+    setTimeout(syncFederationAssets, 1200);
+    if (S.federation.fedTimer) clearInterval(S.federation.fedTimer);
+    S.federation.fedTimer = setInterval(syncFederationAssets, 30000);
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -1454,9 +1460,113 @@ function flushOps() {
   const lastAssets = [...ops].reverse().find(op => op.kind === 'assets-update');
   if (lastAssets && S.project && S.api) {
     S.api.assetsSave(S.project.id, lastAssets.assets).catch(() => { });
+    // 联邦：本机新增/修改资产后，广播 asset:new 给同项目其他在线客户端，
+    // 触发他们启动联邦同步从本机拉取新资产
+    try { S.collab.sendAssetEvent({ t: 'asset:new', kind: lastAssets.assets && 'update', asset: null }); } catch (e) { }
   }
   if (ops.length) setSaveState(true);
   localBackup();
+}
+
+// ---------- 联邦资产同步：每台机器作为自己的服务器 ----------
+// 进入项目时：UDP 发现同网络下所有节点 → 并行拉取每个节点的本项目资产元数据
+// → 对本机没有的资产（按 asset.id 去重），HTTP 拉取原图 → 上传到本机服务器
+// → 合并到 S.project.assets → 持久化 + 广播 assets-update，本机其他客户端立即可见
+// 用户感知：进入项目后顶部显示"📡 联邦同步中… x/y 张已缓存"，结束后资产栏自动刷新
+async function syncFederationAssets() {
+  if (S.federation.syncing) return;
+  if (!S.project || !S.api) return;
+  if (!window.mochi || !mochi.discoverServers) return;   // 浏览器无 UDP 能力，跳过
+  S.federation.syncing = true;
+  S.federation.progress = { cur: 0, total: 0 };
+  renderFederationBar();
+  try {
+    const pid = S.project.id;
+    const all = await mochi.discoverServers();
+    const peers = all.filter(s => s.http && s.http !== S.base);
+    S.federation.peers = peers;
+    if (!peers.length) { S.federation.syncing = false; renderFederationBar(); return; }
+
+    // 收集本机已有资产ID集合
+    const localIds = new Set();
+    const kinds = ['characters', 'scenes', 'props', 'others', 'sfx'];
+    kinds.forEach(k => (((S.project.assets && S.project.assets[k]) || [])).forEach(a => localIds.add(a.id)));
+
+    // 并行向每个节点请求该项目资产元数据
+    const remoteList = [];   // [{ peer, kind, asset }]
+    const seenIds = new Set();   // 远程去重（多个节点都有同一资产时只取一次）
+    await Promise.all(peers.map(async peer => {
+      try {
+        const d = await S.api.federateProjectAssets(peer.http, pid);
+        if (!d || !d.assets) return;
+        kinds.forEach(k => (((d.assets[k]) || [])).forEach(a => {
+          if (!localIds.has(a.id) && !seenIds.has(a.id)) {
+            remoteList.push({ peer, kind: k, asset: a });
+            seenIds.add(a.id);
+          }
+        }));
+      } catch (e) { console.warn('federate fetch failed', peer.http, e.message); }
+    }));
+
+    S.federation.progress.total = remoteList.length;
+    renderFederationBar();
+
+    // 逐个拉取原图并上传到本机
+    let added = false;
+    for (const item of remoteList) {
+      try {
+        const { peer, kind, asset } = item;
+        const newAsset = Object.assign({}, asset);   // 复制一份，避免引用远程对象
+        if (asset.img && /^\/assets\//.test(asset.img)) {
+          const b64 = await S.api.federateFetchBlobBase64(peer.http, asset.id);
+          const ext = (asset.img.match(/\.\w+$/) || ['.png'])[0];
+          const up = await S.api.upload('fed-' + asset.id + ext, b64);
+          newAsset.img = up.url;
+        }
+        if (asset.audio && /^\/assets\//.test(asset.audio)) {
+          const b64 = await S.api.federateFetchBlobBase64(peer.http, asset.id);
+          const ext = (asset.audio.match(/\.\w+$/) || ['.mp3'])[0];
+          const up = await S.api.upload('fed-aud-' + asset.id + ext, b64);
+          newAsset.audio = up.url;
+        }
+        if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
+        if (!S.project.assets[kind]) S.project.assets[kind] = [];
+        S.project.assets[kind].push(newAsset);
+        added = true;
+      } catch (e) {
+        console.warn('federate asset sync failed', item.asset && item.asset.id, e.message);
+      } finally {
+        S.federation.progress.cur++;
+        renderFederationBar();
+      }
+    }
+
+    if (added) {
+      // 持久化到本机服务器 + 广播给本机其他在线客户端
+      try { await S.api.assetsSave(S.project.id, S.project.assets); } catch (e) {}
+      emitOp({ kind: 'assets-update', assets: S.project.assets });
+      if (S.page === 'editor') { renderShots(); renderCharPanel(); }
+      toast('联邦同步完成：新增 ' + remoteList.length + ' 个资产', 'ok');
+    }
+  } catch (e) {
+    console.warn('federation sync error', e.message);
+  } finally {
+    S.federation.syncing = false;
+    S.federation.lastSyncTs = Date.now();
+    renderFederationBar();
+  }
+}
+function renderFederationBar() {
+  const el = $('#federationBar');
+  if (!el) return;
+  if (!S.federation.syncing) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const p = S.federation.progress;
+  const pct = p.total ? Math.round(p.cur / p.total * 100) : 0;
+  const txt = el.querySelector('.fb-text');
+  const bar = el.querySelector('.fb-bar');
+  if (txt) txt.textContent = '📡 联邦同步中… ' + p.cur + '/' + p.total + ' 张已缓存';
+  if (bar) bar.style.width = pct + '%';
 }
 function localBackup() {
   if (!S.episode || !S.data) return;
@@ -1510,6 +1620,14 @@ function initCollab() {
     if (!others.length) { el.textContent = ''; el.style.display = 'none'; return; }
     el.style.display = '';
     el.textContent = '👥 ' + others.map(u => u.name).join('、') + ' 协作中';
+  };
+  // 联邦：同服务器其他客户端上传新资产时收到通知 → 触发联邦同步（拉取其他节点的资产）
+  S.collab.onAssetEvent = m => {
+    if (m.t === 'asset:new') {
+      // 节流：避免短时间内多次触发
+      clearTimeout(S.federation._evtTimer);
+      S.federation._evtTimer = setTimeout(syncFederationAssets, 800);
+    }
   };
   S.collab.onClose = () => {
     if (S.page === 'editor' || S.page === 'setup') {

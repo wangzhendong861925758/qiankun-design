@@ -43,11 +43,31 @@ class Api {
   assetsSave(pid, assets) { return apiFetch(this.base, '/api/projects/' + pid + '/assets/save', { method: 'POST', headers: this.headers(), body: JSON.stringify({ assets }) }); }
 
   abs(u) { return u ? this.base.replace(/\/+$/, '') + u : ''; }
+
+  // ---------- 联邦同步：跨节点资产共享 ----------
+  // 调用任意节点（含本机）的联邦接口；base 参数为目标节点 HTTP 地址
+  federateInfo(base) { return apiFetch(base, '/federate/info', { headers: this.headers() }); }
+  federateProjectAssets(base, pid) { return apiFetch(base, '/federate/projects/' + pid + '/assets', { headers: this.headers() }); }
+  federateStats(base) { return apiFetch(base, '/federate/stats', { headers: this.headers() }); }
+  // 拉取远程资产原图并转 base64（不通过 Api.headers，因为返回的是二进制）
+  async federateFetchBlobBase64(base, assetId) {
+    const r = await fetch(base.replace(/\/+$/, '') + '/federate/asset/' + encodeURIComponent(assetId) + '/blob');
+    if (!r.ok) throw new Error('拉取原图失败 HTTP ' + r.status);
+    const buf = await r.arrayBuffer();
+    // 二进制 → base64
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
 }
 
 // ---------- WebSocket 实时协作 ----------
 class Collab {
-  constructor() { this.ws = null; this.clientId = null; this.onOp = null; this.onPresence = null; this.onClose = null; this.alive = false; }
+  constructor() { this.ws = null; this.clientId = null; this.onOp = null; this.onPresence = null; this.onClose = null; this.onAssetEvent = null; this.alive = false; }
   connect(base, token) {
     this.close();
     const wsBase = base.replace(/^http/, 'ws').replace(/\/+$/, '');
@@ -57,6 +77,7 @@ class Collab {
       if (m.t === 'welcome') { this.clientId = m.clientId; this.alive = true; }
       else if (m.t === 'op' && this.onOp) this.onOp(m);
       else if (m.t === 'presence' && this.onPresence) this.onPresence(m.users || []);
+      else if ((m.t === 'asset:new' || m.t === 'asset:delete') && this.onAssetEvent) this.onAssetEvent(m);
     };
     this.ws.onclose = () => { this.alive = false; if (this.onClose) this.onClose(); };
     this.ws.onerror = () => { };
@@ -67,6 +88,7 @@ class Collab {
   join(projectId, episodeId) { this._send({ t: 'join', projectId, episodeId }); }
   leave() { this._send({ t: 'leave' }); }
   sendOp(op) { this._send({ t: 'op', op }); }
+  sendAssetEvent(obj) { this._send(obj); }
   _send(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   close() { clearInterval(this._hb); if (this.ws) { try { this.ws.close(); } catch (e) { } this.ws = null; } this.alive = false; }
 }

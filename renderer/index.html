@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>乾坤设计 - AI漫剧协作平台</title>
-<link rel="stylesheet" href="styles.css?v=20260902b">
+<link rel="stylesheet" href="styles.css?v=20260902c">
 </head>
 <body>
 
@@ -362,6 +362,12 @@
 </div>
 <button class="update-fab" id="btnCheckUpdate" title="检查更新">🔄</button>
 
+<!-- 联邦资产同步进度条：进入项目后自动显示，跨节点拉取资产原图并缓存到本机 -->
+<div class="federation-bar hidden" id="federationBar">
+  <span class="fb-text">📡 联邦同步中…</span>
+  <div class="fb-track"><div class="fb-bar"></div></div>
+</div>
+
 <!-- ============ 通用弹窗 ============ -->
 <div class="modal-mask hidden" id="modalMask">
   <div class="modal" id="modalBox">
@@ -373,7 +379,7 @@
 <!-- Toast -->
 <div class="toast-wrap" id="toastWrap"></div>
 
-<script src="api.js?v=20260902"></script>
-<script src="app.js?v=20260902"></script>
+<script src="api.js?v=20260902b"></script>
+<script src="app.js?v=20260902b"></script>
 </body>
 </html>
