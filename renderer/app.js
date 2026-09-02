@@ -23,7 +23,8 @@ const S = {
   sel: { text: '', image: '', video: '' },
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
-  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null
+  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null,
+  videoStyle: (function(){ try { return localStorage.getItem('qk_video_style') || ''; } catch(e){ return ''; } })()
 };
 const VOICES = [
   ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
@@ -39,6 +40,50 @@ const STYLES = [
   ['水墨画', '中国水墨画风，留白意境，笔墨晕染'],
   ['赛博朋克', '赛博朋克风格，霓虹光效，未来都市'],
   ['像素风', '像素艺术风格，复古游戏画面']
+];
+// 视频风格库：40种AI视频常用风格（名称 + 风格提示词）
+// 提示词在生成视频时由后台自动注入"风格"段，不进入用户剧本内容；首项为默认
+const VIDEO_STYLES = [
+  ['3D动漫', '3D动漫风格（3D anime style），皮克斯级卡通渲染，角色立体圆润有光泽，材质细腻，柔和全局光照，色彩明快通透'],
+  ['日漫2D', '日本2D动漫风格（2D anime, cel-shading），赛璐璐上色，干净利落的线条，扁平色彩分层，清新唯美'],
+  ['国漫风', '国漫风格，线条细腻飘逸，色彩明快典雅，东方美学构图，仙侠气质'],
+  ['美漫风', '美式漫画风格（American comic style），线条硬朗粗犷，高对比强烈色彩，夸张有力的动态构图'],
+  ['韩漫风', '韩国网漫风格（Korean webtoon style），精致细腻的五官刻画，柔和渐变上色，时尚都市感'],
+  ['吉卜力手绘', '吉卜力工作室手绘风格（Studio Ghibli style），温暖手绘质感，柔和水彩光影，自然清新配色，云朵蓬松，治愈氛围'],
+  ['新海诚光影', '新海诚风格（Makoto Shinkai style），高饱和通透天空，唯美逆光与镜头光斑，光影细腻如画，青春诗意'],
+  ['皮克斯3D', '皮克斯3D动画风格（Pixar animation style），圆润可爱的角色造型，夸张生动的表情，明亮温暖的色彩，顶级卡通渲染'],
+  ['迪士尼手绘', '迪士尼经典手绘风格（classic Disney hand-drawn animation），优雅流畅的手绘曲线，温暖经典配色，音乐剧式表演感'],
+  ['写实电影', '写实电影质感（cinematic realism），真实自然光影，电影级调色与景深，35mm胶片颗粒，好莱坞大片质感'],
+  ['赛博朋克', '赛博朋克风格（cyberpunk style），霓虹蓝紫光效，雨夜街道，全息广告与高科技元素，高对比未来都市'],
+  ['蒸汽朋克', '蒸汽朋克风格（steampunk style），黄铜齿轮机械装置，维多利亚时代服饰，复古工业质感，暖棕色调'],
+  ['水墨国风', '中国水墨画风格（ink wash painting style），笔墨晕染，留白意境，青灰主调，飘逸灵动'],
+  ['古风武侠', '古风武侠风格，飘逸衣袂，刀光剑影，水墨与写实结合，江湖意境，古典雅致配色'],
+  ['油画质感', '油画风格（oil painting style），厚涂笔触纹理，丰富的色彩层次，古典油画光影，浓郁艺术质感'],
+  ['水彩绘本', '水彩风格（watercolor style），淡雅晕染，透明色彩叠加，梦幻柔和，绘本插画意趣'],
+  ['像素艺术', '像素艺术风格（pixel art style），8-bit复古游戏画面，清晰像素块，鲜明有限的色彩'],
+  ['黑白悬疑', '黑白电影noir风格（film noir style），黑白胶片颗粒，高对比明暗，硬光长影，悬疑压抑氛围'],
+  ['复古港风', '复古香港电影风格，90年代港片色调，霓虹招牌与雨后街道，暖黄青绿调，怀旧胶片质感'],
+  ['极简主义', '极简主义风格（minimalist style），纯色背景，大量负空间，几何线条，干净利落无冗余元素'],
+  ['黏土动画', '黏土定格动画风格（claymation style），手工黏土质感，指纹细节，可爱的笨拙感，温暖材质表现'],
+  ['木偶定格', '木偶定格动画风格（stop-motion puppet），羊毛毡与布料材质，微缩场景，手工制作的温暖质感'],
+  ['盲盒手办', '盲盒手办风格（designer toy style），圆润Q版造型，光滑PVC质感，糖果色系，可爱治愈'],
+  ['游戏CG', '游戏CG原画风格（game concept art style），史诗级构图，精致厚涂，高细节，RPG过场动画质感'],
+  ['乙游韩系', '韩系乙女游戏风格，精致唯美立绘画风，柔和光晕，浪漫粉紫色调，梦幻氛围'],
+  ['洛丽塔', '洛丽塔风格（lolita fashion style），华丽蓬蓬裙，蕾丝缎带细节，甜美洛可可配色'],
+  ['童话绘本', '童话绘本风格（picture book illustration），温暖手绘线条，柔和蜡笔质感，充满童趣的构图'],
+  ['扁平卡通', '扁平化卡通风格（flat cartoon style），简约几何造型，明快色块，现代插画感'],
+  ['暗黑哥特', '暗黑哥特风格（gothic style），尖拱剪影，阴郁紫黑色调，神秘烛光，维多利亚暗黑美学'],
+  ['硬核科幻', '硬核科幻风格（hard sci-fi style），冷峻金属质感，蓝色科技光效，全息界面，Unreal Engine渲染质感'],
+  ['蒸汽波', '蒸汽波复古风格（synthwave style），80年代霓虹渐变，粉紫青撞色，网格地平线，复古未来主义'],
+  ['波普艺术', '波普艺术风格（pop art style），大胆撞色色块，丝网印刷质感，本戴网点，强烈视觉冲击'],
+  ['低多边形', '低多边形风格（low poly style），几何多边形拼构，简洁棱角造型，明快顶点着色'],
+  ['素描线稿', '素描线稿风格（line art style），黑白线条勾勒，铅笔排线质感，纯粹手绘感'],
+  ['剪纸艺术', '中国剪纸风格（paper-cut style），层叠镂空花纹，红色喜庆主调，民间艺术质感'],
+  ['史诗奇幻', '史诗奇幻风格（epic fantasy style），宏大魔幻场景，魔法光效，中世纪铠甲，指环王式史诗感'],
+  ['恐怖惊悚', '恐怖悬疑风格（horror style），阴暗冷色调，诡异光影，迷雾与阴影，压抑不安的氛围'],
+  ['温暖治愈', '温暖治愈系风格，奶油色调，柔和漫射光，慢节奏，生活化温馨细节，日系清新'],
+  ['韦斯对称', '韦斯·安德森风格（Wes Anderson style），极致对称构图，粉彩马卡龙色调，平面化舞台感，秩序井然'],
+  ['诺兰大片', '诺兰式大片质感（Nolan-style blockbuster），IMAX宏大场面，冷峻写实，震撼实拍质感']
 ];
 const EXAMPLE_TEXTS = [
   ['星星邮递员', '一只小白兔迷路后遇到森林朋友，经历冒险最终回家的温馨故事。'],
@@ -1029,11 +1074,14 @@ function buildVideoPrompt(s, refs) {
   if (s.dialogue) parts.push('台词：角色用参考音频中该角色的音色（voice timbre）清晰念出台词「' + s.dialogue + '」——参考音频仅决定说话音色与说话方式，台词内容必须严格按剧本文字念出，不得照搬参考音频中的原有语句；口型与所念台词精准同步（lip sync），语气贴合剧情情绪');
   // ③ 镜头：单一运镜 + 景别（避免冲突指令导致画面拉扯）
   parts.push('镜头：中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换');
-  // ④ 风格：光照 + 质感锚点
-  parts.push('风格：高质量动漫风格，柔和自然光，色彩通透，皮肤衣物材质细节清晰，物理运动真实（发丝、衣摆随动作自然摆动）');
+  // ④ 风格：用户所选风格（后台注入，不进入剧本内容）+ 质感锚点
+  const vsDef = VIDEO_STYLES.find(x => x[0] === (S.videoStyle || ''));
+  const stylePrompt = vsDef ? vsDef[1] : '高质量动漫风格，柔和自然光，色彩通透';
+  parts.push('风格：' + stylePrompt + '，皮肤衣物材质细节清晰，物理运动真实（发丝、衣摆随动作自然摆动）');
+  if (vsDef) parts.push('全程严格保持「' + vsDef[0] + '」视觉风格统一（maintain consistent style throughout），所有画面帧、人物、场景、光影均不得偏离该风格');
   // ⑤ 约束：一致性 + 负面约束
   if (bind.length) parts.push('一致性约束：' + bind.join('；'));
-  parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲，无快速变焦和跳切，背景物体保持稳定');
+  parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲，无快速变焦和跳切，背景物体保持稳定' + (vsDef ? '，不得偏离「' + vsDef[0] + '」风格' : ''));
   return parts.join('。');
 }
 async function genFrameImage(id, field) {
@@ -1150,6 +1198,25 @@ function fmtElapsed(ts) {
   const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   return sec < 60 ? sec + ' 秒' : Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
 }
+// 视频风格选择弹窗：40种风格；选择后全局生效（localStorage持久化），后台注入提示词
+function openVideoStylePicker() {
+  const cur = S.videoStyle || '';
+  openModal('选择视频风格（40种）', `
+    <div class="hint" style="margin-bottom:10px">选择后对所有分镜的视频生成自动生效；风格提示词由后台注入，不会出现在剧本内容中。</div>
+    <div class="vp-style-grid">
+      <button class="vp-style-item ${!cur ? 'active' : ''}" data-vs="">默认动漫</button>
+      ${VIDEO_STYLES.map(([name]) => `<button class="vp-style-item ${cur === name ? 'active' : ''}" data-vs="${esc(name)}">${esc(name)}</button>`).join('')}
+    </div>
+  `);
+  document.querySelectorAll('[data-vs]').forEach(btn => btn.onclick = () => {
+    S.videoStyle = btn.dataset.vs;
+    try { localStorage.setItem('qk_video_style', S.videoStyle); } catch (e) {}
+    closeModal();
+    renderVideoPanel();
+    toast(S.videoStyle ? '已选择风格：' + S.videoStyle : '已恢复默认动漫风格', 'ok');
+  });
+}
+
 function renderVideoPanel() {
   const el = $('#videoPanel'); if (!el) return;
   const s = S.selectedShotId ? shotById(S.selectedShotId) : null;
@@ -1169,7 +1236,11 @@ function renderVideoPanel() {
   const videos = s.videos || [];
 
   el.innerHTML = `
-    <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
+    <div class="vp-top-row">
+      <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
+      <button class="btn small vp-style-btn" id="vpStyleBtn" title="选择视频风格（生成时自动生效）">🎨 风格：${esc(S.videoStyle || '默认动漫')}</button>
+    </div>
+    ${S.videoStyle ? `<div class="vp-style-cur">当前风格「${esc(S.videoStyle)}」将自动应用于本镜及所有分镜的视频生成</div>` : ''}
     ${(() => {
       const refs = collectShotRefs(s);
       if (!refs.length && !first) return '<div class="vp-hint warn">⚠ 本镜未绑定人物/场景/道具参考图，将仅按剧本文字生成</div>';
@@ -1235,6 +1306,9 @@ function renderVideoPanel() {
     s.durSel = v; updShot(s.id, { durSel: v }, false);
     const lab = el.querySelector('.vp-dur-val'); if (lab) lab.textContent = v + ' 秒';
   };
+  // 风格选择按钮 → 打开40种风格选择弹窗
+  const styleBtn = $('#vpStyleBtn');
+  if (styleBtn) styleBtn.onclick = openVideoStylePicker;
   el.querySelectorAll('[data-vr]').forEach(btn => btn.onclick = () => {
     S.videoAspect = btn.dataset.vr;
     renderVideoPanel();
