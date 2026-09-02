@@ -379,11 +379,14 @@ function createServer(dataDir, port = 3210) {
     const { projectId, episodeId, kind, resolution, durationSec, items } = req.body || {};
     const p = db.projects.find(x => x.id === projectId);
     const ep = db.episodes.find(x => x.id === episodeId);
+    const usr = db.server.users.find(x => x.id === u.id);
+    const codeObj = usr ? (db.server.codes.find(c => c.id === usr.codeId) || null) : null;
     const groupId = uid();
     const ts = nowTs();
     (items && items.length ? items : [{}]).forEach(it => {
       db.stats.push({
         id: uid(), groupId, ts, userId: u.id, userName: u.name,
+        userCode: codeObj ? codeObj.code : '', codeName: codeObj ? codeObj.name : '',
         projectId, projectName: p ? p.name : '', episodeId, episodeName: ep ? ep.name : '',
         kind: kind || 'video', resolution: resolution || '', durationSec: Number(it.duration || durationSec || 0),
         shotId: it.shotId || '', shotIndex: (it.index === undefined ? 0 : it.index),

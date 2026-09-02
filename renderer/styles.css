@@ -349,6 +349,7 @@ label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px
 .vp-dur-val { color: var(--accent); font-weight: 700; font-size: 14px; }
 .vp-dur-range { margin-left: auto; font-size: 10px; color: var(--text3); }
 .vp-dur-row { display: flex; align-items: center; gap: 8px; }
+.vp-aspect-row { display: flex; gap: 8px; }
 .vp-dur-min, .vp-dur-max { font-size: 11px; color: var(--text3); flex-shrink: 0; }
 .vp-slider { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--bg5); outline: none; cursor: pointer; }
 .vp-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; cursor: pointer; }

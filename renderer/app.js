@@ -23,7 +23,7 @@ const S = {
   sel: { text: '', image: '', video: '' },
   selectedShotId: '', charFilter: '',
   composing: false, updateReady: null, wsRetryTimer: null,
-  stylePickerOpen: false
+  stylePickerOpen: false, videoAspect: '', autoRefreshStats: false, statsTimer: null
 };
 const VOICES = [
   ['zh-CN-XiaoxiaoNeural', '晓晓(女·温柔)'], ['zh-CN-YunxiNeural', '云希(男·阳光)'], ['zh-CN-YunyangNeural', '云扬(男·沉稳)'],
@@ -1135,6 +1135,7 @@ function renderVideoPanel() {
   const url = s.videoUrl ? S.api.abs(s.videoUrl) : '';
   const flReady = (s.firstImg || s.storyboardImg) && s.lastImg;
   const first = s.firstImg || s.storyboardImg;
+  const vAspect = S.videoAspect || S.data.aspect || '16:9';
 
   el.innerHTML = `
     <div class="vp-shot-tag">第 ${idx} 镜 · 视频生成</div>
@@ -1151,6 +1152,13 @@ function renderVideoPanel() {
     <div class="vp-dl-row">
       <a class="btn primary" href="${esc(url)}" download="shot-${idx}.mp4" target="_blank">⬇ 下载视频</a>
     </div>` : ''}
+    <div class="vp-sec">
+      <div class="vp-sec-title">视频比例</div>
+      <div class="vp-aspect-row">
+        <button class="btn small ${vAspect === '16:9' ? 'primary' : 'ghost'}" data-vr="16:9" ${gen ? 'disabled' : ''}>16:9 横屏</button>
+        <button class="btn small ${vAspect === '9:16' ? 'primary' : 'ghost'}" data-vr="9:16" ${gen ? 'disabled' : ''}>9:16 竖屏</button>
+      </div>
+    </div>
     <div class="vp-sec">
       <div class="vp-sec-title">视频时长 <span class="vp-dur-val">${cur} 秒</span><span class="vp-dur-range">${min}–${max}s</span></div>
       <div class="vp-dur-row">
@@ -1179,6 +1187,10 @@ function renderVideoPanel() {
     s.durSel = v; updShot(s.id, { durSel: v }, false);
     const lab = el.querySelector('.vp-dur-val'); if (lab) lab.textContent = v + ' 秒';
   };
+  el.querySelectorAll('[data-vr]').forEach(btn => btn.onclick = () => {
+    S.videoAspect = btn.dataset.vr;
+    renderVideoPanel();
+  });
   const genBtn = el.querySelector('#vpGen');
   if (genBtn) genBtn.onclick = () => doGenShotVideo(s.id, s.durSel || cur, isFL);
 }
@@ -1221,13 +1233,22 @@ async function doGenShotVideo(id, duration, isFL) {
       refUrls = capped.map(r => r.url);
       prompt = buildVideoPrompt(s, capped);
     }
-    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls);
+    const r = await S.api.aiVideo(S.project.id, S.sel.video, prompt, S.videoAspect || S.data.aspect, isFL && first ? S.api.abs(first) : '', isFL && s.lastImg ? S.api.abs(s.lastImg) : '', duration, refUrls);
     clearInterval(S.videoGenTimer);
     if (!r.url) throw new Error(r.error || '服务端未返回视频地址');
     updShot(id, { videoUrl: r.url, duration: r.duration || duration });
     S.videoGen = null; S.videoErr = null;
     renderShots(); renderVideoPanel();
     toast('视频已生成', 'ok');
+    // 记录统计：按校验码所属人员区分，按单个镜头生成次数呈现
+    try {
+      const shotIdx = S.data.shots.findIndex(x => x.id === id);
+      await S.api.stats({
+        projectId: S.project.id, episodeId: S.episode.id, kind: 'video',
+        resolution: '480p', durationSec: r.duration || duration,
+        items: [{ shotId: id, index: shotIdx, text: s.text || '', duration: r.duration || duration }]
+      });
+    } catch (e2) { console.warn('stats record failed', e2.message); }
   } catch (e) {
     clearInterval(S.videoGenTimer);
     S.videoGen = null;
@@ -1350,35 +1371,58 @@ function renderAdminStats(b) {
   const st = (adminCache.stats || []).filter(x => x.kind === 'video');
   const groupIds = new Set(st.map(x => x.groupId));
   const totalDur = st.reduce((s, x) => s + (x.durationSec || 0), 0);
-  const users = new Set(st.map(x => x.userId));
+  const userIds = new Set(st.map(x => x.userId));
+  // 按校验码所属人员分组
   const byUser = {};
   st.forEach(x => {
-    byUser[x.userName] = byUser[x.userName] || { count: 0, groups: new Set(), dur: 0 };
-    byUser[x.userName].count++; byUser[x.userName].groups.add(x.groupId); byUser[x.userName].dur += x.durationSec || 0;
+    const key = x.userCode || x.userName || '未知';
+    byUser[key] = byUser[key] || { name: x.codeName || x.userName || '未知', code: x.userCode || '', count: 0, groups: new Set(), dur: 0, last: 0 };
+    byUser[key].count++; byUser[key].groups.add(x.groupId); byUser[key].dur += x.durationSec || 0; byUser[key].last = Math.max(byUser[key].last, x.ts);
   });
+  const userRows = Object.values(byUser).sort((a, b2) => b2.last - a.last);
+  // 按单个镜头生成次数呈现
   const byShot = {};
   st.forEach(x => {
-    const k = x.projectId + '|' + x.episodeId + '|' + x.shotIndex;
-    byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution };
+    const k = x.projectId + '|' + x.episodeId + '|' + x.shotIndex + '|' + (x.userCode || x.userName);
+    byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution, userName: x.codeName || x.userName, userCode: x.userCode || '' };
     byShot[k].count++; byShot[k].last = Math.max(byShot[k].last, x.ts); byShot[k].dur += x.durationSec || 0;
   });
   const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last).slice(0, 300);
   b.innerHTML = `
+    <div class="admin-toolbar">
+      <button class="btn ghost" id="btnRefreshStats">🔄 刷新</button>
+      <label class="hint" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="autoRefreshStats" ${S.autoRefreshStats ? 'checked' : ''}> 自动刷新（10秒）</label>
+    </div>
     <div class="stat-cards">
       <div class="stat-card"><div class="sc-label">生成视频总数</div><div class="sc-num">${groupIds.size}</div></div>
       <div class="stat-card"><div class="sc-label">分镜生成次数</div><div class="sc-num">${st.length}</div></div>
       <div class="stat-card"><div class="sc-label">视频总时长</div><div class="sc-num">${fmtDur(totalDur)}</div></div>
-      <div class="stat-card"><div class="sc-label">参与用户数</div><div class="sc-num">${users.size}</div></div>
+      <div class="stat-card"><div class="sc-label">参与用户数</div><div class="sc-num">${userIds.size}</div></div>
       <div class="stat-card"><div class="sc-label">项目数</div><div class="sc-num">${(adminCache.projects || []).length}</div></div>
     </div>
-    <div class="admin-section"><h3>按用户统计</h3>
-      <table class="admin-table"><tr><th>用户</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th></tr>
-      ${Object.entries(byUser).map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td></tr>`).join('') || '<tr><td colspan="4">暂无数据</td></tr>'}
+    <div class="admin-section"><h3>按校验码人员统计</h3>
+      <table class="admin-table"><tr><th>校验码</th><th>所属人员</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th><th>最近生成</th></tr>
+      ${userRows.map(v => `<tr><td class="code-mono">${esc(v.code)}</td><td>${esc(v.name)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td><td>${fmtTime(v.last)}</td></tr>`).join('') || '<tr><td colspan="6">暂无数据，用户生成视频后此处自动统计</td></tr>'}
       </table></div>
     <div class="admin-section"><h3>按分镜统计（最近300条）</h3>
-      <table class="admin-table"><tr><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
-      ${shotRows.map(r => `<tr><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="8">暂无数据，用户生成视频后此处自动统计</td></tr>'}
+      <table class="admin-table"><tr><th>校验码人员</th><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
+      ${shotRows.map(r => `<tr><td>${esc(r.userName)}${r.userCode ? '<span class="code-mono" style="margin-left:4px;font-size:10px;color:var(--text3)">' + esc(r.userCode) + '</span>' : ''}</td><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="9">暂无数据，用户生成视频后此处自动统计</td></tr>'}
       </table></div>`;
+  const refBtn = $('#btnRefreshStats');
+  if (refBtn) refBtn.onclick = loadAdmin;
+  const cb = $('#autoRefreshStats');
+  if (cb) cb.onchange = () => {
+    S.autoRefreshStats = cb.checked;
+    if (S.autoRefreshStats) startStatsAutoRefresh(); else clearInterval(S.statsTimer);
+  };
+  if (S.autoRefreshStats) startStatsAutoRefresh();
+}
+function startStatsAutoRefresh() {
+  clearInterval(S.statsTimer);
+  S.statsTimer = setInterval(() => {
+    if (S.page === 'admin' && adminTab === 'stats') loadAdmin();
+    else clearInterval(S.statsTimer);
+  }, 10000);
 }
 function renderAdminUsers(b) {
   const codes = adminCache.codes || [];
