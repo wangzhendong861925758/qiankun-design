@@ -1285,10 +1285,11 @@ async function doGenShotVideo(id, duration, isFL) {
     // 首尾帧模式：仅用首帧+尾帧（两种模式互斥，不可混用）
     let refUrls = [];
     let prompt;
+    let refs = [];
     if (isFL) {
       prompt = buildVideoPrompt(s, []);
     } else {
-      const refs = collectShotRefs(s);
+      refs = collectShotRefs(s);
       if (first) refs.push({ url: S.api.abs(first), kind: '分镜图', name: '分镜图', desc: '' });
       const capped = refs.slice(0, 9);
       refUrls = capped.map(r => r.url);
