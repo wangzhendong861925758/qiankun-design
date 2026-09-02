@@ -49,6 +49,12 @@ class Api {
   federateInfo(base) { return apiFetch(base, '/federate/info', { headers: this.headers() }); }
   federateProjectAssets(base, pid) { return apiFetch(base, '/federate/projects/' + pid + '/assets', { headers: this.headers() }); }
   federateStats(base) { return apiFetch(base, '/federate/stats', { headers: this.headers() }); }
+  // 联邦全量数据：拉取某节点所有项目/校验码/分集元数据/统计（供本机合并，达到跨节点互通）
+  federateAll(base) { return apiFetch(base, '/federate/all', { headers: this.headers() }); }
+  // 联邦分集内容：按需拉取某分集的剧本/分镜内容
+  federateEpisodeContent(base, eid) { return apiFetch(base, '/federate/episode/' + eid + '/content', { headers: this.headers() }); }
+  // 联邦合并：把收集到的其他节点数据推送到本机服务器（按 id 去重，只新增本机没有的）
+  federateMerge(payload) { return apiFetch(this.base, '/federate/merge', { method: 'POST', headers: this.headers(), body: JSON.stringify(payload) }); }
   // 拉取远程资产原图并转 base64（不通过 Api.headers，因为返回的是二进制）
   async federateFetchBlobBase64(base, assetId) {
     const r = await fetch(base.replace(/\/+$/, '') + '/federate/asset/' + encodeURIComponent(assetId) + '/blob');

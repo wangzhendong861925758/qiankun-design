@@ -300,7 +300,8 @@ ipcMain.handle('lan:discover', async () => {
         const j = JSON.parse(msg.toString());
         if (j && j.app === 'qiankun-design' && j.http) {
           // 本机服务器 → 用 localhost 地址（绕开防火墙对局域网 IP 的拦截，连接更稳）
-          if (j.ip && myIPs.has(j.ip)) j.http = 'http://localhost:' + j.port;
+          // 并标记 isMine，供登录页扫描结果显示"（我的服务器）"
+          if (j.ip && myIPs.has(j.ip)) { j.http = 'http://localhost:' + j.port; j.isMine = true; }
           found.set(j.http, j);
         }
       } catch (e) {}

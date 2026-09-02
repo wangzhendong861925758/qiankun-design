@@ -181,8 +181,8 @@ async function scanServers() {
       box.innerHTML = '<div class="hint warn">未发现同网络下的服务器。请逐项确认：<br>① 双方电脑均已打开本软件；<br>② 双方在同一网络（同一WiFi/路由器）；<br>③ Windows 防火墙已放行本软件（首次启动弹窗时须点"允许访问"，若错过：控制面板 → Windows Defender 防火墙 → 允许应用通过防火墙 → 勾选乾坤设计）。<br>仍未发现时，可在对方软件左下角查看本机服务器地址手动填入。</div>';
     } else {
       box.innerHTML = '<div class="hint" style="margin-bottom:6px">发现 ' + list.length + ' 台服务器，点击即填入：</div>' +
-        list.map(s => `<button class="server-scan-item" data-url="${esc(s.http)}">
-          <span class="s-srv-url">${esc(s.http)}</span>
+        list.map(s => `<button class="server-scan-item ${s.isMine ? 'mine' : ''}" data-url="${esc(s.http)}">
+          <span class="s-srv-url">${esc(s.http)}${s.isMine ? '<span class="s-srv-mine">（我的服务器）</span>' : ''}</span>
           <span class="s-srv-info">${s.projects || 0} 项目 · ${s.episodes || 0} 分集 · v${esc(s.version || '')}</span>
         </button>`).join('');
       box.querySelectorAll('[data-url]').forEach(b => b.onclick = () => {
@@ -212,6 +212,10 @@ async function doLogin() {
       S.api = new Api(base, r.token);
       initCollab();
       await loadProjects();
+      // 登录成功后启动联邦管理端同步（立即一次 + 每 30s 兜底，确保其他设备创建的项目/校验码在本机可见可用）
+      setTimeout(syncFederationAdmin, 1500);
+      if (S.federation.adminTimer) clearInterval(S.federation.adminTimer);
+      S.federation.adminTimer = setInterval(syncFederationAdmin, 30000);
     } else {
       const u = $('#loginAdminUser').value.trim(), p = $('#loginAdminPass').value;
       if (!u || !p) { hint.textContent = '请输入管理员账号和密码'; return; }
@@ -220,6 +224,10 @@ async function doLogin() {
       localStorage.setItem('qk_base', base);
       S.api = new Api(base, r.token);
       enterAdmin();
+      // 管理员登录后同样启动联邦同步，确保管理端跨设备数据可见
+      setTimeout(syncFederationAdmin, 1500);
+      if (S.federation.adminTimer) clearInterval(S.federation.adminTimer);
+      S.federation.adminTimer = setInterval(syncFederationAdmin, 30000);
     }
   } catch (e) {
     const msg = String(e.message || e);
@@ -360,6 +368,23 @@ async function openEpisode(id) {
     S.episode = r.episode;
     S.data = Object.assign({ aspect: '16:9', style: '国漫风', script: '', require: '', shots: [] }, r.data);
     if (!Array.isArray(S.data.shots)) S.data.shots = [];
+    // 本机无内容时（分集由其他设备创建/编辑过），从联邦节点按需拉取分集内容并保存到本机
+    if (!S.data.shots.length && !S.data.script && window.mochi && mochi.discoverServers) {
+      try {
+        const peers = (await mochi.discoverServers()).filter(s => s.http && s.http !== S.base);
+        for (const p of peers) {
+          try {
+            const fr = await S.api.federateEpisodeContent(p.http, id);
+            if (fr && fr.data && ((Array.isArray(fr.data.shots) && fr.data.shots.length) || fr.data.script)) {
+              S.data = Object.assign({ aspect: '16:9', style: '国漫风', script: '', require: '', shots: [] }, fr.data);
+              if (!Array.isArray(S.data.shots)) S.data.shots = [];
+              try { await S.api.saveEpisode(id, S.data); } catch (e) {}
+              break;
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
     // 从服务端刷新项目共享资产（其他成员添加的资产进入时即可见）
     try {
       const pr = await S.api.project(S.project.id);
@@ -1471,6 +1496,38 @@ function flushOps() {
 // ---------- 联邦资产同步：每台机器作为自己的服务器 ----------
 // 进入项目时：UDP 发现同网络下所有节点 → 并行拉取每个节点的本项目资产元数据
 // → 对本机没有的资产（按 asset.id 去重），HTTP 拉取原图 → 上传到本机服务器
+// ---------- 联邦管理端同步：项目/校验码/分集元数据跨节点互通 ----------
+// 登录后：UDP 发现同网络下所有节点 → 并行拉取每个节点的全量项目/校验码/分集元数据
+// → 合并去重后推送到本机服务器（/federate/merge 按 id 只新增本机没有的）
+// 用户感知：在任一设备创建的项目/校验码，其他设备登录后立即可见可用
+async function syncFederationAdmin() {
+  if (S.federation.adminSyncing) return;
+  if (!S.api || !window.mochi || !mochi.discoverServers) return;
+  S.federation.adminSyncing = true;
+  try {
+    const all = await mochi.discoverServers();
+    const peers = all.filter(s => s.http && s.http !== S.base);
+    if (!peers.length) return;
+    // 并行拉取每个节点的全量数据
+    const results = await Promise.all(peers.map(p => S.api.federateAll(p.http).catch(() => null)));
+    // 合并所有节点的数据（跨节点再去重一次，避免多节点有相同数据重复推送）
+    const merged = { projects: [], codes: [], episodes: [] };
+    const seenP = new Set(), seenC = new Set(), seenE = new Set();
+    for (const d of results) {
+      if (!d) continue;
+      (d.projects || []).forEach(p => { if (p.id && !seenP.has(p.id)) { seenP.add(p.id); merged.projects.push(p); } });
+      (d.codes || []).forEach(c => { if (c.id && !seenC.has(c.id)) { seenC.add(c.id); merged.codes.push(c); } });
+      (d.episodes || []).forEach(e => { if (e.id && !seenE.has(e.id)) { seenE.add(e.id); merged.episodes.push(e); } });
+    }
+    if (merged.projects.length || merged.codes.length || merged.episodes.length) {
+      try { await S.api.federateMerge(merged); } catch (e) {}
+    }
+    // 同步后刷新当前可见页面
+    const pageEl = $('#pageProjects'); const adminEl = $('#pageAdmin');
+    if (pageEl && !pageEl.classList.contains('hidden')) { try { await loadProjects(); } catch (e) {} }
+    else if (adminEl && !adminEl.classList.contains('hidden')) { try { await loadAdmin(); } catch (e) {} }
+  } catch (e) { /* 静默 */ } finally { S.federation.adminSyncing = false; }
+}
 // → 合并到 S.project.assets → 持久化 + 广播 assets-update，本机其他客户端立即可见
 // 用户感知：进入项目后顶部显示"📡 联邦同步中… x/y 张已缓存"，结束后资产栏自动刷新
 async function syncFederationAssets() {

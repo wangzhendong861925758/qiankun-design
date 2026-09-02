@@ -163,7 +163,7 @@ function createServer(dataDir, port = 3210) {
     if (!p) return res.status(404).json({ error: '项目不存在' });
     const count = db.episodes.filter(e => e.projectId === p.id).length;
     const name = String((req.body || {}).name || '').trim() || ('第' + (count + 1) + '集');
-    const ep = { id: uid(), projectId: p.id, name, order: count + 1, createdAt: nowTs(), updatedAt: nowTs(), updatedBy: u.name };
+    const ep = { id: uid(), projectId: p.id, name, order: count + 1, createdAt: nowTs(), updatedAt: nowTs(), updatedBy: u.name, ownerNode: db.server.nodeId };
     db.episodes.push(ep);
     fs.writeFileSync(epFile(ep.id), JSON.stringify({ id: ep.id, projectId: p.id, name: ep.name, aspect: '9:16', script: '', shots: [] }, null, 2));
     p.updatedAt = nowTs();
@@ -439,6 +439,72 @@ function createServer(dataDir, port = 3210) {
   app.get('/federate/stats', (req, res) => {
     res.json({ nodeId: db.server.nodeId, stats: db.stats });
   });
+  // 联邦全量数据：供同网络其他节点拉取合并（项目/校验码/用户/分集元数据/统计）
+  // 设计：每条数据带 ownerNode 标识来源节点，接收方按 id 去重合并，避免循环传播
+  app.get('/federate/all', (req, res) => {
+    res.json({
+      nodeId: db.server.nodeId, version: APP_VERSION,
+      codes: db.server.codes, users: db.server.users,
+      projects: db.projects, episodes: db.episodes, stats: db.stats
+    });
+  });
+  // 联邦分集内容：按需拉取某分集的剧本/分镜内容（episodes/xxx.json）
+  app.get('/federate/episode/:id/content', (req, res) => {
+    const ep = db.episodes.find(x => x.id === req.params.id);
+    if (!ep) return res.status(404).json({ error: '分集不存在' });
+    const data = loadEpisode(ep.id);
+    if (!data) return res.status(404).json({ error: '分集内容不存在' });
+    res.json({ nodeId: db.server.nodeId, episodeId: ep.id, data });
+  });
+  // 联邦合并：接收其他节点推送的数据，按 id 去重只新增本机没有的（避免循环 + 数据互通）
+  app.post('/federate/merge', (req, res) => {
+    const body = req.body || {};
+    let changed = { projects: 0, codes: 0, episodes: 0 };
+    // 合并项目（按 id 去重）
+    if (Array.isArray(body.projects)) {
+      const ids = new Set(db.projects.map(p => p.id));
+      for (const p of body.projects) {
+        if (p && p.id && !ids.has(p.id)) {
+          db.projects.push({
+            id: p.id, name: p.name || '未命名', createdAt: p.createdAt || nowTs(), updatedAt: p.updatedAt || nowTs(),
+            ownerNode: p.ownerNode || '', models: p.models || { text: [], image: [], video: [] }, assets: p.assets || emptyAssets()
+          });
+          changed.projects++;
+        }
+      }
+    }
+    // 合并校验码（按 id 去重；校验码是登录凭证，跨节点共享后新设备登录也能用）
+    if (Array.isArray(body.codes)) {
+      const ids = new Set(db.server.codes.map(c => c.id));
+      for (const c of body.codes) {
+        if (c && c.id && !ids.has(c.id)) {
+          db.server.codes.push({
+            id: c.id, code: c.code, name: c.name || '未命名', createdAt: c.createdAt || nowTs(),
+            disabled: !!c.disabled, ownerNode: c.ownerNode || ''
+          });
+          changed.codes++;
+        }
+      }
+    }
+    // 合并分集元数据（按 id 去重；内容按需通过 /federate/episode/:id/content 拉取）
+    if (Array.isArray(body.episodes)) {
+      const ids = new Set(db.episodes.map(e => e.id));
+      for (const e of body.episodes) {
+        if (e && e.id && !ids.has(e.id)) {
+          db.episodes.push({
+            id: e.id, projectId: e.projectId, name: e.name || '未命名', order: e.order || 0,
+            createdAt: e.createdAt || nowTs(), updatedAt: e.updatedAt || nowTs(),
+            updatedBy: e.updatedBy || '', ownerNode: e.ownerNode || ''
+          });
+          changed.episodes++;
+        }
+      }
+    }
+    if (changed.projects) saveKey('projects', 'projects.json');
+    if (changed.codes) saveKey('server', 'server.json');
+    if (changed.episodes) saveKey('episodes', 'episodes.json');
+    res.json({ ok: true, changed });
+  });
 
   // ---------- 生成统计 ----------
   app.post('/api/stats', (req, res) => {
@@ -474,7 +540,7 @@ function createServer(dataDir, port = 3210) {
     const name = String((req.body || {}).name || '').trim() || '未命名用户';
     const code = String((req.body || {}).code || '').trim().toUpperCase() || genCode();
     if (db.server.codes.some(c => c.code === code)) return res.status(400).json({ error: '该校验码已存在' });
-    const c = { id: uid(), code, name, createdAt: nowTs(), disabled: false };
+    const c = { id: uid(), code, name, createdAt: nowTs(), disabled: false, ownerNode: db.server.nodeId };
     db.server.codes.push(c);
     saveKey('server', 'server.json');
     res.json({ ok: true, code: c });
@@ -489,7 +555,7 @@ function createServer(dataDir, port = 3210) {
     if (!needAdmin(req, res)) return;
     const name = String((req.body || {}).name || '').trim();
     if (!name) return res.status(400).json({ error: '请填写项目名称' });
-    const p = { id: uid(), name, createdAt: nowTs(), updatedAt: nowTs(), models: { text: [], image: [], video: [] }, assets: emptyAssets() };
+    const p = { id: uid(), name, createdAt: nowTs(), updatedAt: nowTs(), ownerNode: db.server.nodeId, models: { text: [], image: [], video: [] }, assets: emptyAssets() };
     db.projects.push(p);
     saveKey('projects', 'projects.json');
     res.json({ ok: true, project: p });
@@ -714,7 +780,7 @@ function createServer(dataDir, port = 3210) {
     try { udpSock.send(makePayload(), port2, host); } catch (e) { }
   }
 
-  return { server, app, wss, port, dataDir, ready, close: () => { try { udpSock && udpSock.close(); } catch (e) {} try { server.close(); } catch (e) {} } };
+  return { server, app, wss, port, dataDir, ready, nodeId: db.server.nodeId, close: () => { try { udpSock && udpSock.close(); } catch (e) {} try { server.close(); } catch (e) {} } };
 }
 
 module.exports = { createServer, ADMINS, APP_VERSION };
