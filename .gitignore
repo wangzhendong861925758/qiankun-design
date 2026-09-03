@@ -3,6 +3,7 @@ node_modules/
 
 # 打包产物
 dist/
+dist-new/
 *.exe
 *.blockmap
 

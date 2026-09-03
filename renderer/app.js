@@ -7,7 +7,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const fmtTime = ts => { if (!ts) return '-'; const d = new Date(ts); return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 const fmtDur = s => { s = Math.round(Number(s) || 0); return Math.floor(s / 60) + '分' + String(s % 60).padStart(2, '0') + '秒'; };
 const avatarColor = (name) => {
-  const colors = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899', '#6366f1'];
+  const colors = ['#f0a83c', '#4fc283', '#6aa1ff', '#e5544b', '#b58bd8', '#5ec8d8', '#e88fb0', '#a3b86b'];
   let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
   return colors[Math.abs(h) % colors.length];
 };
