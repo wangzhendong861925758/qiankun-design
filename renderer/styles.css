@@ -627,6 +627,35 @@ input[type="range"] { accent-color: var(--accent); }
   background-size: 220% 100%; animation: omShimmer 1.6s linear infinite;
 }
 @keyframes omShimmer { to { background-position: -120% 0; } }
+
+/* ============================================================
+   v2.0.9 管理端·按分镜统计折叠树（人员 → 项目 → 分集 → 镜头）
+   ============================================================ */
+.st-tree { display: flex; flex-direction: column; gap: 8px; }
+.st-node { border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(180deg, var(--bg3), var(--bg2)); overflow: hidden; transition: border-color .18s ease, box-shadow .18s ease; }
+.st-node[open] { border-color: rgba(240,168,60,.28); box-shadow: var(--lift-shadow); }
+.st-node > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 10px 14px; user-select: none; transition: background .15s ease; }
+.st-node > summary::-webkit-details-marker { display: none; }
+.st-node > summary:hover { background: rgba(240,168,60,.07); }
+.st-node[open] > summary { border-bottom: 1px solid var(--line); background: rgba(240,168,60,.05); }
+.st-tw { color: var(--text3); font-size: 10px; transition: transform .18s ease, color .18s ease; display: inline-block; width: 12px; flex: none; }
+.st-node[open] > summary .st-tw { transform: rotate(90deg); color: var(--accent); }
+.st-name { font-weight: 600; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-code { font-size: 10px; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line2); background: var(--bg4); flex: none; }
+.st-meta { margin-left: auto; font-size: 11px; color: var(--text3); font-family: ui-monospace, Consolas, monospace; letter-spacing: .02em; white-space: nowrap; }
+.st-children { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+.st-lv1 > .st-children { margin-left: 13px; border-left: 2px solid rgba(240,168,60,.22); padding-left: 12px; }
+.st-lv2 > .st-children { margin-left: 13px; border-left: 2px solid rgba(106,161,255,.20); padding-left: 12px; }
+.st-lv3 > .st-children { margin-left: 13px; border-left: 2px solid var(--line2); padding-left: 12px; }
+.st-lv2, .st-lv3 { background: var(--bg2); }
+.st-lv2 > summary, .st-lv3 > summary { padding: 8px 12px; }
+.st-lv3 > summary .st-name { font-size: 12px; font-weight: 500; }
+.st-shot-row { display: flex; align-items: center; gap: 16px; padding: 7px 12px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--line); font-size: 12px; color: var(--text2); transition: border-color .15s ease, transform .15s ease; }
+.st-shot-row:hover { border-color: rgba(240,168,60,.38); transform: translateX(2px); }
+.st-shot-idx { color: var(--accent); font-weight: 700; font-family: ui-monospace, Consolas, monospace; min-width: 52px; }
+.st-shot-cell b { color: var(--text); }
+.st-shot-last { margin-left: auto; color: var(--text3); font-size: 11px; }
+.st-empty { font-size: 12px; color: var(--text3); padding: 6px 12px; }
 .vp-progress-label span:last-child { color: var(--accent); }
 
 /* ---- 11. 生成中呼吸 / 在线脉冲 ---- */

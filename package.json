@@ -1,6 +1,6 @@
 {
   "name": "qiankun-design",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "乾坤设计 - AI漫剧协作平台（桌面版）",
   "main": "main.js",
   "scripts": {

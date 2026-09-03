@@ -15,7 +15,7 @@ const ADMINS = [
   { username: 'zhaojiawei', password: '123456', name: '管理员-赵' }
 ];
 
-const APP_VERSION = '2.0.8';
+const APP_VERSION = '2.0.9';
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function nowTs() { return Date.now(); }
 function genCode() { // 生成8位校验码
@@ -438,15 +438,17 @@ function createServer(dataDir, port = 3210) {
         const epd = loadEpisode(task.episodeId);
         if (epd) { const ii = epd.shots.findIndex(s => s.id === task.shotId); if (ii >= 0) shotIdx = ii; }
       }
-      db.stats.push({
+      const stat = {
         id: uid(), groupId: task.id, ts: nowTs(), userId: task.by.userId, userName: task.by.name,
         userCode: codeObj ? codeObj.code : '', codeName: codeObj ? codeObj.name : '',
         projectId: task.projectId, projectName: p ? p.name : '', episodeId: task.episodeId, episodeName: epMeta ? epMeta.name : '',
         kind: 'video', resolution: '480p', durationSec: Number(result.duration || 0),
         shotId: task.shotId, shotIndex: shotIdx, shotText: String(task.shotText || '').slice(0, 60),
         nodeId: db.server.nodeId
-      });
+      };
+      db.stats.push(stat);
       saveKey('stats', 'stats.json');
+      fedPushStats([stat]);   // v2.0.9 生成即推送：立即复制到所有在线节点（管理端无需用户设备在线）
     } catch (e) { console.error('finishVideoTask', e.message); }
   }
   // 提交生成任务：立即返回 taskId；后台执行（多任务天然并发，同用户多分镜/多用户互不阻塞）
@@ -639,8 +641,9 @@ function createServer(dataDir, port = 3210) {
     const codeObj = usr ? (db.server.codes.find(c => c.id === usr.codeId) || null) : null;
     const groupId = uid();
     const ts = nowTs();
+    const newStats = [];
     (items && items.length ? items : [{}]).forEach(it => {
-      db.stats.push({
+      const rec = {
         id: uid(), groupId, ts, userId: u.id, userName: u.name,
         userCode: codeObj ? codeObj.code : '', codeName: codeObj ? codeObj.name : '',
         projectId, projectName: p ? p.name : '', episodeId, episodeName: ep ? ep.name : '',
@@ -648,9 +651,11 @@ function createServer(dataDir, port = 3210) {
         shotId: it.shotId || '', shotIndex: (it.index === undefined ? 0 : it.index),
         shotText: String(it.text || '').slice(0, 60),
         nodeId: db.server.nodeId
-      });
+      };
+      db.stats.push(rec); newStats.push(rec);
     });
     saveKey('stats', 'stats.json');
+    fedPushStats(newStats);   // v2.0.9 生成即推送：立即复制到所有在线节点
     res.json({ ok: true });
   });
 
@@ -835,6 +840,49 @@ function createServer(dataDir, port = 3210) {
   });
   server.listen(port, '0.0.0.0');
 
+  // ---------- 联邦统计复制（v2.0.9：生成即推送 + 周期互拉，管理端无需用户设备在线） ----------
+  // 背景：统计原先只存在"生成它的设备"上，管理端只能拉取在线节点 → 用户设备离线即看不到其数据。
+  // 方案：① 本服务器被动接收其他节点的 UDP 广播（每5s一次），维护在线联邦节点表；
+  //      ② 统计落库瞬间立即推送给所有在线节点（生成时该设备必然在线，同时在线的设备即刻拿到并持久化）；
+  //      ③ 每 60s 从在线节点互拉补漏（错过的推送在节点在线时间重叠时自动补齐）。
+  // 效果：管理端电脑只要开着本软件（哪怕停在登录页），用户生成记录即实时复制到管理端本机持久化，
+  //      之后用户设备离线，管理端"数据统计"依然完整可见。全程按统计 id 去重，无重复无遗漏。
+  const fedPeers = new Map();   // http -> { http, nodeId, lastSeen }
+  function fedLivePeers() {
+    const now = nowTs(), out = [];
+    for (const p of fedPeers.values()) if (now - p.lastSeen < 30000) out.push(p.http);
+    return out;
+  }
+  // 生成即推送：把新统计发给所有在线节点（fire-and-forget，失败静默——周期互拉会补）
+  async function fedPushStats(records) {
+    if (!Array.isArray(records) || !records.length) return;
+    for (const base of fedLivePeers()) {
+      try {
+        await fetchTimeout(base + '/federate/merge', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stats: records })
+        }, 5000);
+      } catch (e) { /* 节点瞬断等，静默 */ }
+    }
+  }
+  // 从单个节点拉取全量统计并合并（按 id 只新增本机没有的）
+  async function fedPullStatsFrom(base) {
+    try {
+      const r = await fetchTimeout(base + '/federate/stats', {}, 5000);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!Array.isArray(d.stats) || !d.stats.length) return;
+      const ids = new Set(db.stats.map(s => s.id));
+      let n = 0;
+      for (const s of d.stats) if (s && s.id && !ids.has(s.id)) { db.stats.push(s); ids.add(s.id); n++; }
+      if (n) { saveKey('stats', 'stats.json'); console.log('[联邦] 统计补拉 ' + base + ' 新增 ' + n + ' 条'); }
+    } catch (e) { /* 节点不在线等，静默 */ }
+  }
+  function fedPullAllPeers() { for (const base of fedLivePeers()) fedPullStatsFrom(base); }
+  // 启动 8s 后首拉 + 每 60s 互拉：节点在线时间有任何重叠即自动补齐
+  setTimeout(fedPullAllPeers, 8000);
+  setInterval(fedPullAllPeers, 60000);
+
   // 局域网自动发现：UDP 广播定时宣告本机 HTTP 地址，客户端扫描即可一键连接
   let udpSock = null;
   try {
@@ -842,8 +890,19 @@ function createServer(dataDir, port = 3210) {
     udpSock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     udpSock.on('error', () => { try { udpSock.close(); } catch (e) {} });
     udpSock.on('message', (msg, rinfo) => {
+      const txt = msg.toString();
       // 收到客户端探测请求 → 单播定向回送请求者（客户端不监听 3211，必须回送到其随机端口）
-      if (msg.toString() === 'QK_DISCOVER') sendAnnounce(rinfo.address, rinfo.port);
+      if (txt === 'QK_DISCOVER') return sendAnnounce(rinfo.address, rinfo.port);
+      // 其他节点的定时广播 → 维护联邦在线节点表；发现新节点上线 → 稍候即拉取其统计补漏
+      try {
+        const j = JSON.parse(txt);
+        if (j && j.app === 'qiankun-design' && j.http && j.nodeId && j.nodeId !== db.server.nodeId) {
+          const known = fedPeers.get(j.http);
+          const fresh = known && (nowTs() - known.lastSeen < 120000);
+          fedPeers.set(j.http, { http: j.http, nodeId: j.nodeId, lastSeen: nowTs() });
+          if (!fresh) setTimeout(() => fedPullStatsFrom(j.http), 1500);
+        }
+      } catch (e) { /* 非 JSON 广播，忽略 */ }
     });
     udpSock.bind(3211, '0.0.0.0', () => {
       udpSock.setBroadcast(true);

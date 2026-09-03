@@ -1904,6 +1904,7 @@ function initCollab() {
 
 // 管理端
 let adminTab = 'stats', adminCache = null;
+let statsTreeOpen = new Set();   // 按分镜统计折叠树展开状态（自动刷新时保持不跳变）
 function enterAdmin() {
   $('#adminName').textContent = '👤 ' + S.admin.name;
   showPage('admin');
@@ -1935,14 +1936,52 @@ function renderAdminStats(b) {
     byUser[key].count++; byUser[key].groups.add(x.groupId); byUser[key].dur += x.durationSec || 0; byUser[key].last = Math.max(byUser[key].last, x.ts);
   });
   const userRows = Object.values(byUser).sort((a, b2) => b2.last - a.last);
-  // 按单个镜头生成次数呈现
-  const byShot = {};
+  // ---- 按分镜统计：四级折叠树（校验码人员 → 参与项目 → 创建分集 → 镜头明细）----
+  const tree = {};
   st.forEach(x => {
-    const k = x.projectId + '|' + x.episodeId + '|' + x.shotIndex + '|' + (x.userCode || x.userName);
-    byShot[k] = byShot[k] || { projectName: x.projectName, episodeName: x.episodeName, idx: x.shotIndex, text: x.shotText, count: 0, last: 0, dur: 0, res: x.resolution, userName: x.codeName || x.userName, userCode: x.userCode || '' };
-    byShot[k].count++; byShot[k].last = Math.max(byShot[k].last, x.ts); byShot[k].dur += x.durationSec || 0;
+    const uk = x.userCode || x.userName || '未知';
+    const pk = x.projectId || '未知';
+    const ek = x.episodeId || '未知';
+    tree[uk] = tree[uk] || { name: x.codeName || x.userName || '未知', code: x.userCode || '', count: 0, groups: new Set(), dur: 0, last: 0, projects: {} };
+    const u = tree[uk];
+    u.count++; u.groups.add(x.groupId); u.dur += x.durationSec || 0; u.last = Math.max(u.last, x.ts);
+    u.projects[pk] = u.projects[pk] || { name: x.projectName || '未知项目', count: 0, groups: new Set(), dur: 0, last: 0, episodes: {} };
+    const pr = u.projects[pk];
+    pr.count++; pr.groups.add(x.groupId); pr.dur += x.durationSec || 0; pr.last = Math.max(pr.last, x.ts);
+    pr.episodes[ek] = pr.episodes[ek] || { name: x.episodeName || '未知分集', count: 0, groups: new Set(), dur: 0, last: 0, shots: {} };
+    const ep2 = pr.episodes[ek];
+    ep2.count++; ep2.groups.add(x.groupId); ep2.dur += x.durationSec || 0; ep2.last = Math.max(ep2.last, x.ts);
+    const sk = String(x.shotIndex === undefined ? 0 : x.shotIndex);
+    ep2.shots[sk] = ep2.shots[sk] || { idx: x.shotIndex || 0, count: 0, dur: 0, last: 0, res: x.resolution || '' };
+    const sh = ep2.shots[sk];
+    sh.count++; sh.dur += x.durationSec || 0; sh.last = Math.max(sh.last, x.ts);
   });
-  const shotRows = Object.values(byShot).sort((a, b2) => b2.last - a.last);   // 全量呈现（联邦合并后含所有设备所有时间的记录）
+  // 自动刷新重渲染前收集展开状态，避免 10s 刷新把树收起来
+  document.querySelectorAll('#adminBody details.st-node').forEach(d => { if (d.open) statsTreeOpen.add(d.dataset.key); else statsTreeOpen.delete(d.dataset.key); });
+  const openAttr = k => statsTreeOpen.has(k) ? ' open' : '';
+  const shotRow = sh => `<div class="st-shot-row"><span class="st-shot-idx">镜 #${sh.idx + 1}</span><span class="st-shot-cell">生成 <b>${sh.count}</b> 次</span><span class="st-shot-cell">累计 ${fmtDur(sh.dur)}</span><span class="st-shot-cell">${esc(sh.res)}</span><span class="st-shot-last">${fmtTime(sh.last)}</span></div>`;
+  const treeHtml = Object.values(tree).sort((a, b2) => b2.last - a.last).map(u => {
+    const ukKey = 'u:' + (u.code || u.name);
+    const projs = Object.entries(u.projects).sort((a, b2) => b2[1].last - a[1].last).map(([pid, p]) => {
+      const pkKey = ukKey + ':p:' + pid;
+      const eps = Object.entries(p.episodes).sort((a, b2) => b2[1].last - a[1].last).map(([eid, e2]) => {
+        const ekKey = pkKey + ':e:' + eid;
+        const shots = Object.values(e2.shots).sort((a, b2) => a.idx - b2.idx).map(shotRow).join('');
+        return `<details class="st-node st-lv3" data-key="${esc(ekKey)}"${openAttr(ekKey)}>
+          <summary><span class="st-tw">▶</span><span class="st-name">🎬 ${esc(e2.name)}</span><span class="st-meta">生成 ${e2.count} 次 · ${fmtDur(e2.dur)} · 最近 ${fmtTime(e2.last)}</span></summary>
+          <div class="st-children">${shots || '<div class="st-empty">无镜头记录</div>'}</div>
+        </details>`;
+      }).join('');
+      return `<details class="st-node st-lv2" data-key="${esc(pkKey)}"${openAttr(pkKey)}>
+        <summary><span class="st-tw">▶</span><span class="st-name">📁 ${esc(p.name)}</span><span class="st-meta">生成 ${p.count} 次 · ${fmtDur(p.dur)} · 最近 ${fmtTime(p.last)}</span></summary>
+        <div class="st-children">${eps || '<div class="st-empty">无分集记录</div>'}</div>
+      </details>`;
+    }).join('');
+    return `<details class="st-node st-lv1" data-key="${esc(ukKey)}"${openAttr(ukKey)}>
+      <summary><span class="st-tw">▶</span><span class="st-name">👤 ${esc(u.name)}</span>${u.code ? `<span class="code-mono st-code">${esc(u.code)}</span>` : ''}<span class="st-meta">视频 ${u.groups.size} · 生成 ${u.count} 次 · ${fmtDur(u.dur)} · 最近 ${fmtTime(u.last)}</span></summary>
+      <div class="st-children">${projs || '<div class="st-empty">无项目记录</div>'}</div>
+    </details>`;
+  }).join('');
   b.innerHTML = `
     <div class="admin-toolbar">
       <button class="btn ghost" id="btnRefreshStats">🔄 刷新</button>
@@ -1959,10 +1998,8 @@ function renderAdminStats(b) {
       <table class="admin-table"><tr><th>校验码</th><th>所属人员</th><th>视频数</th><th>分镜生成次数</th><th>总时长</th><th>最近生成</th></tr>
       ${userRows.map(v => `<tr><td class="code-mono">${esc(v.code)}</td><td>${esc(v.name)}</td><td>${v.groups.size}</td><td>${v.count}</td><td>${fmtDur(v.dur)}</td><td>${fmtTime(v.last)}</td></tr>`).join('') || '<tr><td colspan="6">暂无数据，用户生成视频后此处自动统计</td></tr>'}
       </table></div>
-    <div class="admin-section"><h3>按分镜统计（全量 ${shotRows.length} 条 · 跨设备联邦合并）</h3>
-      <table class="admin-table"><tr><th>校验码人员</th><th>项目</th><th>分集</th><th>镜号</th><th>画面内容</th><th>生成次数</th><th>累计时长</th><th>清晰度</th><th>最近生成</th></tr>
-      ${shotRows.map(r => `<tr><td>${esc(r.userName)}${r.userCode ? '<span class="code-mono" style="margin-left:4px;font-size:10px;color:var(--text3)">' + esc(r.userCode) + '</span>' : ''}</td><td>${esc(r.projectName)}</td><td>${esc(r.episodeName)}</td><td>#${r.idx + 1}</td><td>${esc(r.text)}</td><td>${r.count}</td><td>${fmtDur(r.dur)}</td><td>${esc(r.res)}</td><td>${fmtTime(r.last)}</td></tr>`).join('') || '<tr><td colspan="9">暂无数据，用户生成视频后此处自动统计</td></tr>'}
-      </table></div>`;
+    <div class="admin-section"><h3>按分镜统计（人员 → 项目 → 分集 → 镜头 · 全量 ${st.length} 条 · 逐级点击展开）</h3>
+      <div class="st-tree">${treeHtml || '<div class="st-empty">暂无数据，用户生成视频后此处自动统计</div>'}</div></div>`;
   const refBtn = $('#btnRefreshStats');
   if (refBtn) refBtn.onclick = async () => {
     // 刷新 = 先联邦同步拉齐其他节点的生成记录（含离线期间其他设备产生的数据），再加载本机聚合结果
