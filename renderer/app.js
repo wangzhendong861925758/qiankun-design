@@ -566,6 +566,11 @@ function renderShots() {
     </div>`;
     return;
   }
+  // 修复打字跳行：协作广播/联邦同步/任务完成等触发的整体重渲染会替换正在编辑的输入框——
+  // 渲染前保存焦点/光标/滚动/高度，渲染后恢复到新 DOM（输入不中断、光标不跳）
+  const act = document.activeElement;
+  const ed = (act && act.tagName === 'TEXTAREA' && act.dataset && act.dataset.f === 'text' && body.contains(act)) ? act : null;
+  const edSt = ed ? { sid: ed.dataset.sid, ss: ed.selectionStart, se: ed.selectionEnd, top: ed.scrollTop, h: ed.style.height } : null;
   body.innerHTML = S.data.shots.map((s, i) => {
     return `
     <div class="shot-row" data-id="${s.id}">
@@ -601,6 +606,16 @@ function renderShots() {
     </div>
     <div class="shot-insert" data-act="insert-after" data-sid="${s.id}" title="在此下方新建分镜"><span class="si-btn">＋</span><span class="si-txt">新建分镜</span></div>`;
   }).join('');
+  // 恢复正在编辑的输入框（若该分镜仍存在）：焦点/光标/滚动/高度原位还原
+  if (edSt) {
+    const ta = body.querySelector('textarea[data-f="text"][data-sid="' + edSt.sid + '"]');
+    if (ta) {
+      try { ta.setSelectionRange(edSt.ss, edSt.se); } catch (e) { }
+      ta.scrollTop = edSt.top;
+      if (edSt.h) ta.style.height = edSt.h;
+      ta.focus({ preventScroll: true });
+    }
+  }
   // 播放上传的配音
   body.querySelectorAll('[data-act="play-voice"]').forEach(el => el.onclick = () => {
     const u = el.dataset.url;
@@ -808,7 +823,14 @@ function initShotEvents() {
       autoBindTimers[id] = setTimeout(() => {
         const s = shotById(id); if (!s) return;
         if (autoAtAssets(s)) {
+          // 修复打字跳行：程序给 textarea 赋值会把光标重置到末尾——
+          // 保存光标，赋值后恢复；@插入点在光标之前时光标随插入平移
+          const oldText = ta.value, ss = ta.selectionStart, se = ta.selectionEnd;
           ta.value = s.text;
+          let pre = 0;
+          while (pre < oldText.length && pre < s.text.length && oldText[pre] === s.text[pre]) pre++;
+          const adj = (s.text.length > oldText.length && ss > pre) ? (s.text.length - oldText.length) : 0;
+          try { ta.setSelectionRange(ss + adj, se + adj); } catch (e) { }
           const hl = ta.closest('.shot-row') && ta.closest('.shot-row').querySelector('.script-hl');
           if (hl) hl.innerHTML = scriptHighlightHTML(s.text, S.project.assets || {});
           emitOp({ kind: 'shot-update', episodeId: S.episode.id, shot: s });
@@ -998,13 +1020,12 @@ function openAssetModal(kind, asset, onSave) {
         <button class="btn small" id="amImgUp">上传</button>
         <button class="btn small" id="amImgAi">AI生成</button>
       </div></div>` : ''}
-    ${isChar ? `<div class="form-row"><label>配音音色</label><select id="amVoice">${VOICES.map(v => `<option value="${v[0]}" ${a.voice === v[0] ? 'selected' : ''}>${v[1]}</option>`).join('')}</select></div>` : ''}
     ${isChar ? `<div class="form-row"><label>声音音色参考</label>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${audio ? `<audio src="${esc(S.api.abs(audio))}" controls style="height:32px;max-width:220px"></audio>` : '<span class="hint">未上传</span>'}
+        ${audio ? `<audio src="${esc(S.api.abs(audio))}" controls style="height:32px;max-width:220px"></audio>` : '<span class="hint">未上传（可留空）</span>'}
         <button class="btn small" id="amAudioUp">上传声音样本</button>
         ${audio ? '<button class="btn small ghost" id="amAudioRm">移除</button>' : ''}
-        <span class="hint">仅作音色参考：视频生成时 AI 按此音色念剧本台词</span>
+        <span class="hint">留空时：首次生成视频由 AI 自由定音色，生成后自动提取该音色回绑本资产，项目内所有设备共享</span>
       </div></div>` : ''}
     <div class="modal-foot-btns"><button class="btn ghost" id="amCancel">取消</button><button class="btn primary" id="amSave">保存</button></div>
   `);
@@ -1040,7 +1061,7 @@ function openAssetModal(kind, asset, onSave) {
     const n = $('#amName').value.trim();
     if (!n) return toast('请填写名称', 'err');
     a.name = n; a.desc = $('#amDesc').value.trim(); a.img = img;
-    if (isChar) { a.voice = $('#amVoice').value; a.audio = audio; }
+    if (isChar) { a.voice = a.voice || autoVoiceFor(n); a.audio = audio; }
     if (!asset) {
       if (!S.project.assets) S.project.assets = { characters: [], scenes: [], props: [], others: [], sfx: [] };
       if (!S.project.assets[kind]) S.project.assets[kind] = [];
@@ -1130,36 +1151,88 @@ function collectShotRefs(s) {
   });
   return refs.slice(0, 9);
 }
+// 人物TTS音色稳定分配（仅用于旧版"AI配音"按钮；视频生成音色走人物资产 audio 样本自动回绑）
+// 同名人物在任何分镜/任何设备上哈希结果一致 → 音色固定
+function autoVoiceFor(name) {
+  let h = 0; const s = String(name || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return VOICES[h % VOICES.length][0];
+}
+// 解析当前分镜说话人对应的人物资产：优先本镜绑定人物中名字匹配 speaker 的，其次全局同名，最后第一个绑定人物
+function speakerCharOf(s) {
+  const A = (S.project.assets || {}).characters || [];
+  if (!A.length) return null;
+  const sp = String(s.speaker || '').trim();
+  const inShot = (s.characterIds || []).map(id => A.find(c => c.id === id)).filter(Boolean);
+  if (sp) {
+    const m = inShot.find(c => c.name === sp) || A.find(c => c.name === sp);
+    if (m) return m;
+  }
+  return inShot[0] || null;
+}
+// 从剧本文本解析运镜指令（用户明确写了运镜 → 用用户的；官方规范：一个镜头只用一种运镜，
+// 指令冲突（如"固定镜头"却被注入"缓慢推近"）是镜头漂移的直接原因）
+function parseCameraDir(text) {
+  const t = String(text || '');
+  const has = kw => t.includes(kw);
+  if (has('固定镜头') || has('固定机位') || has('锁定机位') || has('机位固定')) return '固定镜头，锁定机位（static shot, locked-off camera），全程画面稳定，镜头不移动、不推拉、不摇移';
+  if (has('环绕') || has('旋转镜头')) return '环绕运镜（orbit shot），单一平稳环绕';
+  if (has('跟拍') || has('跟随镜头')) return '跟拍运镜（tracking shot），平稳跟随主体';
+  if (has('拉远') || has('后拉') || has('拉镜头')) return '缓慢拉远（slow pull back）';
+  if (has('推近') || has('推镜头') || has('推进')) return '缓慢推近（slow push-in）';
+  if (has('横摇') || has('摇镜')) return '平稳横摇（pan）';
+  if (has('横移') || has('平移')) return '平稳横移（lateral tracking）';
+  if (has('俯拍') || has('航拍') || has('俯视')) return '俯拍视角（high angle / drone view），缓慢平稳';
+  if (has('仰拍') || has('低角度')) return '仰拍低角度（low angle shot），缓慢平稳';
+  if (has('手持')) return '手持镜头（handheld），轻微自然晃动';
+  return '';
+}
 // 视频提示词：按 Seedance 2.0 官方提示词规范（主体→动作→镜头→风格→约束）
-// - 前置元素权重更高：参考图身份声明放最前，用官方 @ImageN 语法显式绑定
-// - 单一运镜、物理细节、光照氛围提升真实感
-// - 一致性约束 + 负面约束锁住资产还原度
-// - 台词触发原生口型同步（Seedance 2.0 支持有声视频）
+// - 前置元素权重更高：参考图身份声明放最前，官方"将@图片N中的…定义为…"句式
+// - 运镜：剧本明确指定时优先用户指令且锁定单一运镜；未指定才用默认
+// - 台词音色：说话人资产有音色样本 → 强绑定参考音频；无 → AI 自由定音色（首版后服务端自动回绑）
+// - 参考图多时按官方"素材分工"声明，降低特征优先级混淆
 function buildVideoPrompt(s, refs) {
   // ① 主体：先声明各参考图身份（模型对靠前元素权重更高）
   const defs = [], bind = [];
+  const roleNames = { 人物: [], 场景: [], 道具: [] };
   refs.forEach((r, i) => {
     const n = i + 1;
     const d = r.desc ? '，' + r.desc : '';
-    if (r.kind === '人物') { defs.push('@Image' + n + ' 是人物「' + r.name + '」' + d); bind.push('「' + r.name + '」全程面部、发型、服装与 @Image' + n + ' 完全一致（same person across frames, maintain face consistency）'); }
-    else if (r.kind === '场景') { defs.push('@Image' + n + ' 是场景「' + r.name + '」' + d); bind.push('画面环境即 @Image' + n + ' 中的场景，空间布局、色调光照严格一致'); }
-    else if (r.kind === '道具') { defs.push('@Image' + n + ' 是道具「' + r.name + '」' + d); bind.push('「' + r.name + '」外观与 @Image' + n + ' 严格一致'); }
-    else defs.push('@Image' + n + ' 是本镜头构图参考');
+    if (r.kind === '人物') { defs.push('将@图片' + n + '中的人物定义为「' + r.name + '」' + d); bind.push('「' + r.name + '」全程面部、发型、服装与@图片' + n + '完全一致（same person across frames, maintain face consistency）'); roleNames.人物.push(r.name); }
+    else if (r.kind === '场景') { defs.push('将@图片' + n + '中的环境定义为场景「' + r.name + '」' + d); bind.push('画面环境即@图片' + n + '中的场景，空间布局、色调光照严格一致'); roleNames.场景.push(r.name); }
+    else if (r.kind === '道具') { defs.push('将@图片' + n + '中的物品定义为道具「' + r.name + '」' + d); bind.push('「' + r.name + '」外观与@图片' + n + '严格一致'); roleNames.道具.push(r.name); }
+    else defs.push('@图片' + n + ' 是本镜头构图参考');
   });
-  // ② 动作：剧情 + 台词（口型同步；参考音频仅提供音色，内容以剧本台词为准）
+  // ② 动作：剧情（用户明确描述的内容为强参考，不得自我发挥）
   const parts = [];
   if (defs.length) parts.push(defs.join('；') + '。');
   parts.push('动作：' + (s.text || ''));
-  if (s.dialogue) parts.push('台词：角色用参考音频中该角色的音色（voice timbre）清晰念出台词「' + s.dialogue + '」——参考音频仅决定说话音色与说话方式，台词内容必须严格按剧本文字念出，不得照搬参考音频中的原有语句；口型与所念台词精准同步（lip sync），语气贴合剧情情绪');
-  // ③ 镜头：单一运镜 + 景别（避免冲突指令导致画面拉扯）
-  parts.push('镜头：中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换');
-  // ④ 风格：用户所选风格（后台注入，不进入剧本内容）+ 质感锚点
+  parts.push('剧情严格按照上述剧本文字执行，明确描述的人物、动作、场景、道具不得增删或替换');
+  // ③ 台词：音色来源按说话人是否有音色样本自适应（口型同步；参考音频仅提供音色，内容以剧本台词为准）
+  const spk = speakerCharOf(s);
+  if (s.dialogue) parts.push(spk && spk.audio
+    ? '台词：「' + (spk.name || '角色') + '」用参考音频中的音色（voice timbre）清晰念出台词「' + s.dialogue + '」——参考音频仅决定说话音色与说话方式，台词内容必须严格按剧本文字念出，不得照搬参考音频中的原有语句；口型与所念台词精准同步（lip sync），语气贴合剧情情绪'
+    : '台词：角色用符合人物设定的自然音色清晰念出台词「' + s.dialogue + '」，口型与台词精准同步（lip sync），语气贴合剧情情绪');
+  // ④ 镜头：剧本明确指定运镜时用用户的并锁定；未指定才用默认推近
+  const camDir = parseCameraDir(s.text);
+  parts.push('镜头：' + (camDir
+    ? camDir + '。全程仅执行这一种运镜方式，不得自行增加推、拉、摇、移、变焦或视角变化'
+    : '中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换'));
+  // ⑤ 风格：用户所选风格（后台注入，不进入剧本内容）+ 质感锚点
   const vsDef = VIDEO_STYLES.find(x => x[0] === (S.videoStyle || ''));
   const stylePrompt = vsDef ? vsDef[1] : '高质量动漫风格，柔和自然光，色彩通透';
   parts.push('风格：' + stylePrompt + '，皮肤衣物材质细节清晰，物理运动真实（发丝、衣摆随动作自然摆动）');
   if (vsDef) parts.push('全程严格保持「' + vsDef[0] + '」视觉风格统一（maintain consistent style throughout），所有画面帧、人物、场景、光影均不得偏离该风格');
-  // ⑤ 约束：一致性 + 负面约束
+  // ⑥ 约束：一致性 + 素材分工（多参考图时按官方"功能角色"声明）+ 负面约束
   if (bind.length) parts.push('一致性约束：' + bind.join('；'));
+  if (refs.length > 5) {
+    const g = [];
+    if (roleNames.人物.length) g.push('人物外观以' + roleNames.人物.map(x => '「' + x + '」').join('、') + '的人物参考图为准');
+    if (roleNames.场景.length) g.push('环境以场景参考图为准');
+    if (roleNames.道具.length) g.push('道具外观以道具参考图为准');
+    if (g.length) parts.push('素材分工：' + g.join('；') + '，各参考图只影响其声明的部分，互不干扰');
+  }
   parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲，无快速变焦和跳切，背景物体保持稳定' + (vsDef ? '，不得偏离「' + vsDef[0] + '」风格' : ''));
   return parts.join('。');
 }
@@ -1182,10 +1255,10 @@ async function genShotVoice(id) {
   const s = shotById(id); if (!s) return;
   const text = (s.dialogue || s.text || '').trim();
   if (!text) return toast('没有台词无法配音', 'err');
-  let voice = s.voice || 'zh-CN-XiaoxiaoNeural';
-  const A = (S.project.assets || {}).characters || [];
-  const c = A.find(x => (s.characterIds || []).includes(x.id) && x.voice);
-  if (c) voice = c.voice;
+  let voice = s.voice || '';
+  const spk = speakerCharOf(s);
+  if (spk && spk.voice) voice = spk.voice;
+  if (!voice) voice = autoVoiceFor(spk ? spk.name : (s.speaker || ''));
   try {
     toast('配音中…');
     const r = await window.mochi.ttsGenerate({ text, voice, rate: '+0%', pitch: '+0Hz' });
@@ -1442,14 +1515,19 @@ async function doGenShotVideo(id, duration, isFL) {
     refUrls = capped.map(r => r.url);
     prompt = buildVideoPrompt(s, capped);
   }
-  // 声音来源：优先绑定人物资产上传的音色参考样本；无则用分镜配音（TTS/自由上传）
-  const voiceRef = refs.find(r => r.kind === '人物' && r.audio);
-  const audioUrl = voiceRef ? S.api.abs(voiceRef.audio) : (s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
+  // 声音来源：说话人的人物资产音色样本（v2.1.0 修复：按 speaker 精确匹配，不再取"第一个有音色的人物"）
+  // 无音色样本 → 不传参考音频，由 AI 自由定音色；生成成功后服务端自动提取该音色回绑到人物资产
+  const spk = speakerCharOf(s);
+  const audioUrl = (spk && spk.audio) ? S.api.abs(spk.audio) : (s.voiceUrl ? S.api.abs(s.voiceUrl) : '');
   const payload = {
     projectId: S.project.id, modelId: S.sel.video, prompt,
     aspect: S.videoAspect || S.data.aspect,
     firstFrame: isFL && first ? S.api.abs(first) : '', lastFrame: isFL && s.lastImg ? S.api.abs(s.lastImg) : '',
     duration, refImages: refUrls, audio: audioUrl,
+    // 有台词/配音 → 生成有声视频（Seedance 2.0 原生音视频联合生成）
+    wantAudio: !!(s.dialogue || audioUrl),
+    // 说话人资产尚无音色样本且有台词 → 服务端生成成功后自动提取音色回绑（首版即定型）
+    speakerAssetId: (s.dialogue && spk && !spk.audio) ? spk.id : '',
     episodeId: S.episode.id, shotId: id, shotText: s.text || ''
   };
   // 先本地占位（提交中），拿到 taskId 后更新
@@ -1727,6 +1805,7 @@ async function syncFederationAssets() {
 
     // ---- 步骤2：并行向每个节点请求该项目资产元数据，找出本机没有的新资产 ----
     const remoteList = [];   // [{ kind, asset }]
+    const audioBackfill = new Map();   // v2.1.0 音色绑定回填：其他节点已回绑音色的人物资产（本机同 id 资产缺 audio 字段）
     const seenIds = new Set(localIds);   // 远程去重（多个节点都有同一资产时只取一次）
     await Promise.all(peers.map(async peer => {
       try {
@@ -1734,6 +1813,8 @@ async function syncFederationAssets() {
         if (!d || !d.assets) return;
         kinds.forEach(k => (((d.assets[k]) || [])).forEach(a => {
           if (a.id && !seenIds.has(a.id)) { remoteList.push({ kind: k, asset: a }); seenIds.add(a.id); }
+          // 人物资产已有音色样本且本机同名资产尚无 → 待回填（本机已有则跳过，保证"首版即定型"不互相覆盖）
+          else if (k === 'characters' && a.id && a.audio && /^\/assets\//.test(String(a.audio))) audioBackfill.set(a.id, a);
         }));
       } catch (e) { console.warn('federate fetch failed', peer.http, e.message); }
     }));
@@ -1753,7 +1834,7 @@ async function syncFederationAssets() {
       return null;
     };
 
-    let added = false, fixed = 0;
+    let added = false, fixed = 0, voiced = 0;
 
     // ---- 步骤3：拉取远程新资产（元数据 + 文件本体），新增到本机 ----
     for (const item of remoteList) {
@@ -1794,12 +1875,24 @@ async function syncFederationAssets() {
       finally { S.federation.progress.cur++; renderFederationBar(); }
     }
 
-    if (added || fixed) {
+    // ---- 步骤4.5：音色绑定回填（v2.1.0）：拉取其他节点已回绑的音色文件 → 上传本机 → 补到本机人物资产 ----
+    // 背景：资产按 id 同步只新增不更新，音色是首版视频生成后由服务端回绑的新字段，需显式补齐；
+    // 本机已绑定的不覆盖（首版即定型），保证多设备并发回绑时不互相抖动
+    for (const pa of audioBackfill.values()) {
+      try {
+        const local = ((S.project.assets.characters) || []).find(x => x.id === pa.id);
+        if (!local || local.audio) continue;
+        const u = await fetchAndUpload(pa.id, 'audio', (String(pa.audio).match(/\.\w+$/) || ['.mp3'])[0]);
+        if (u) { local.audio = u; voiced++; }
+      } catch (e) { /* 静默：下轮同步重试 */ }
+    }
+
+    if (added || fixed || voiced) {
       // 持久化到本机服务器 + 广播给本机其他在线客户端
       try { await S.api.assetsSave(S.project.id, S.project.assets); } catch (e) {}
       emitOp({ kind: 'assets-update', assets: S.project.assets });
       if (S.page === 'editor') { renderShots(); renderCharPanel(); }
-      toast('联邦同步完成：新增 ' + remoteList.length + ' 个资产，补齐 ' + fixed + ' 个缺失文件', 'ok');
+      toast('联邦同步完成：新增 ' + remoteList.length + ' 个资产，补齐 ' + fixed + ' 个缺失文件' + (voiced ? '，回填 ' + voiced + ' 个人物音色' : ''), 'ok');
     }
   } catch (e) {
     console.warn('federation sync error', e.message);

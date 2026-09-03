@@ -15,7 +15,7 @@ const ADMINS = [
   { username: 'zhaojiawei', password: '123456', name: '管理员-赵' }
 ];
 
-const APP_VERSION = '2.0.9';
+const APP_VERSION = '2.1.0';
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function nowTs() { return Date.now(); }
 function genCode() { // 生成8位校验码
@@ -294,6 +294,7 @@ function createServer(dataDir, port = 3210) {
   // 同步接口（/api/ai/video）与后台任务接口（/api/ai/video/task）共用
   async function runVideoGen(m, params) {
     const { prompt, aspect, firstFrame, lastFrame, duration, refImages, audio } = params || {};
+    const wantAudio = !!(params && params.wantAudio);   // v2.1.0：有台词/配音 → 无参考音频也生成声音（Seedance 2.0 原生音视频联合生成）
     {
       const base = apiBase(m);
       const dur = Math.max(4, Math.min(15, Number(duration) || 5));   // Seedance 2.0 时长范围 [4,15] 秒
@@ -318,13 +319,14 @@ function createServer(dataDir, port = 3210) {
       // 参考音频（配音）→ 口型同步：官方 content 结构 {type:'audio_url', audio_url:{url}, role:'reference_audio'}
       if (au) cArr.push({ type: 'audio_url', audio_url: { url: au }, role: 'reference_audio' });
       const arkBody = { model: m.model, content: cArr, ratio, duration: dur, resolution: '480p', watermark: false };
-      if (au) arkBody.generate_audio = true;
+      if (au || wantAudio) arkBody.generate_audio = true;
 
       // ---- new-api / OpenAI 风格 flat 格式（兜底）----
       const flatBody = { model: m.model, prompt: text, ratio, aspect_ratio: ratio, duration: dur, duration_seconds: dur, resolution: '480p', size: ratio === '16:9' ? '864x480' : '480x864', quality: '480p' };
       if (refs.length) { flatBody.reference_image_urls = refs; flatBody.reference_images = refs; flatBody.input_reference_role = 'reference_image'; }
       else { if (ff) { flatBody.image = ff; flatBody.image_url = ff; flatBody.first_frame_url = ff; } if (lf) { flatBody.image_tail = lf; flatBody.last_frame_url = lf; } }
-      if (au) { flatBody.audio_url = au; flatBody.reference_audio_urls = [au]; flatBody.generate_audio = true; }
+      if (au) { flatBody.audio_url = au; flatBody.reference_audio_urls = [au]; }
+      if (au || wantAudio) flatBody.generate_audio = true;
 
       // 端点+格式自适应：方舟原生优先；网关无此端点(404/405)时降级 new-api 风格
       const rootBase = base.replace(/\/(v\d+|api\/v\d+)\/?$/, '');
@@ -450,6 +452,40 @@ function createServer(dataDir, port = 3210) {
       saveKey('stats', 'stats.json');
       fedPushStats([stat]);   // v2.0.9 生成即推送：立即复制到所有在线节点（管理端无需用户设备在线）
     } catch (e) { console.error('finishVideoTask', e.message); }
+    // v2.1.0 音色首版自动回绑：说话人人物资产尚无音色样本 → 从本条视频提取其说话音频绑定到资产。
+    // 之后该项目所有设备生成该人物台词视频都以它为音色参考（跨节点经联邦资产同步共享），实现"首版即定型"。
+    if (task.speakerAssetId && task.wantAudio) {
+      try { bindVoiceFromVideo(task, result.url); } catch (e) { console.error('[音色] 回绑失败', e.message); }
+    }
+  }
+  // 从生成视频中提取音轨并绑定到说话人人物资产（ffmpeg 提取；失败静默，下次生成自动重试）
+  let FFMPEG_PATH = null;
+  try { FFMPEG_PATH = require('@ffmpeg-installer/ffmpeg').path; } catch (e) { FFMPEG_PATH = null; }
+  function bindVoiceFromVideo(task, videoUrl) {
+    if (!FFMPEG_PATH) return;
+    const p = db.projects.find(x => x.id === task.projectId);
+    if (!p || !p.assets) return;
+    const c = ((p.assets.characters) || []).find(x => x.id === task.speakerAssetId);
+    if (!c || c.audio) return;   // 已有音色：首版即定型，不覆盖
+    const m = String(videoUrl || '').match(/\/assets\/([\w.-]+)$/);
+    if (!m) return;
+    const src = path.join(dataDir, 'assets', m[1]);
+    if (!fs.existsSync(src)) return;
+    const outName = 'voice-' + uid() + '.mp3';
+    const outPath = path.join(dataDir, 'assets', outName);
+    require('child_process').execFile(FFMPEG_PATH,
+      ['-y', '-i', src, '-vn', '-acodec', 'libmp3lame', '-q:a', '4', outPath],
+      { timeout: 60000 },
+      (err) => {
+        try {
+          if (err || !fs.existsSync(outPath)) return;   // 无音轨/提取失败 → 静默，下次生成重试
+          c.audio = '/assets/' + outName;
+          saveKey('projects', 'projects.json');
+          // 广播给同项目在线客户端：立即拿到绑定（文件本体由联邦资产同步自动补齐到各节点）
+          broadcastRoom(task.projectId, { t: 'op', op: { kind: 'assets-update', assets: p.assets }, from: { userId: task.by.userId, name: task.by.name }, clientId: 'srv_voice_' + task.id });
+          console.log('[音色] 已从首版视频提取音色并绑定人物「' + c.name + '」（项目内所有设备共享）');
+        } catch (e2) { console.error('[音色] 回绑落库失败', e2.message); }
+      });
   }
   // 提交生成任务：立即返回 taskId；后台执行（多任务天然并发，同用户多分镜/多用户互不阻塞）
   app.post('/api/ai/video/task', async (req, res) => {
@@ -460,7 +496,8 @@ function createServer(dataDir, port = 3210) {
     const task = {
       id: 'vt_' + uid(), projectId: b.projectId, episodeId: b.episodeId || '', shotId: b.shotId || '',
       shotText: String(b.shotText || '').slice(0, 60),
-      params: { prompt: b.prompt, aspect: b.aspect, firstFrame: b.firstFrame, lastFrame: b.lastFrame, duration: b.duration, refImages: b.refImages, audio: b.audio },
+      params: { prompt: b.prompt, aspect: b.aspect, firstFrame: b.firstFrame, lastFrame: b.lastFrame, duration: b.duration, refImages: b.refImages, audio: b.audio, wantAudio: !!b.wantAudio },
+      wantAudio: !!b.wantAudio, speakerAssetId: String(b.speakerAssetId || ''),   // v2.1.0 音色首版回绑
       status: 'running', pct: 0, startedAt: nowTs(), duration: Math.max(4, Math.min(15, Number(b.duration) || 5)),
       by: { userId: u.id, name: u.name }
     };
