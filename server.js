@@ -15,7 +15,7 @@ const ADMINS = [
   { username: 'zhaojiawei', password: '123456', name: '管理员-赵' }
 ];
 
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function nowTs() { return Date.now(); }
 function genCode() { // 生成8位校验码
@@ -115,9 +115,16 @@ function createServer(dataDir, port = 3210) {
   function absUrl(req, p) { return 'http://' + (req.headers.host || ('localhost:' + port)) + p; }
 
   // ---------- 登录 ----------
-  app.post('/api/login', (req, res) => {
+  app.post('/api/login', async (req, res) => {
     const code = String((req.body || {}).code || '').trim().toUpperCase();
-    const c = db.server.codes.find(x => x.code.toUpperCase() === code && !x.disabled);
+    let c = db.server.codes.find(x => x.code.toUpperCase() === code && !x.disabled);
+    // v2.2.0 鸡生蛋修复：本机无此码 → 立即向在线联邦节点同步一次再查。
+    // 原死结：码的传播依赖"登录成功后"的客户端联邦同步，新设备没码→登录失败→同步永不启动。
+    // 现在登录即触发服务端联邦（周期同步的兜底），新设备开机即登录也能用全网任何码。
+    if (!c) {
+      try { await Promise.all(fedLivePeers().map(b => fedSyncFromNode(b))); } catch (e) { /* 静默 */ }
+      c = db.server.codes.find(x => x.code.toUpperCase() === code && !x.disabled);
+    }
     if (!c) return res.status(400).json({ error: '校验码无效或已被删除' });
     let u = db.server.users.find(x => x.codeId === c.id);
     if (!u) { u = { id: uid(), codeId: c.id, name: c.name, firstSeen: nowTs() }; db.server.users.push(u); saveKey('server', 'server.json'); }
@@ -607,10 +614,11 @@ function createServer(dataDir, port = 3210) {
     if (!data) return res.status(404).json({ error: '分集内容不存在' });
     res.json({ nodeId: db.server.nodeId, episodeId: ep.id, data });
   });
-  // 联邦合并：接收其他节点推送的数据，按 id 去重只新增本机没有的（避免循环 + 数据互通）
-  app.post('/federate/merge', (req, res) => {
-    const body = req.body || {};
-    let changed = { projects: 0, codes: 0, episodes: 0, stats: 0 };
+  // 联邦合并核心：接收其他节点的数据，按 id 去重只新增本机没有的（避免循环 + 数据互通）。
+  // HTTP 接口 /federate/merge（客户端推送）与服务端周期互拉（v2.2.0 fedSyncFromNode）共用此逻辑。
+  function mergeFederateData(body) {
+    body = body || {};
+    const changed = { projects: 0, codes: 0, episodes: 0, stats: 0 };
     // 合并项目（按 id 去重）
     if (Array.isArray(body.projects)) {
       const ids = new Set(db.projects.map(p => p.id));
@@ -637,7 +645,7 @@ function createServer(dataDir, port = 3210) {
         }
       }
     }
-    // 合并分集元数据（按 id 去重；内容按需通过 /federate/episode/:id/content 拉取）
+    // 合并分集元数据（按 id 去重；内容由 fedSyncFromNode 自动补拉落盘）
     if (Array.isArray(body.episodes)) {
       const ids = new Set(db.episodes.map(e => e.id));
       for (const e of body.episodes) {
@@ -665,7 +673,11 @@ function createServer(dataDir, port = 3210) {
     if (changed.codes) saveKey('server', 'server.json');
     if (changed.episodes) saveKey('episodes', 'episodes.json');
     if (changed.stats) saveKey('stats', 'stats.json');
-    res.json({ ok: true, changed });
+    return changed;
+  }
+  // 联邦合并：接收其他节点推送的数据
+  app.post('/federate/merge', (req, res) => {
+    res.json({ ok: true, changed: mergeFederateData(req.body) });
   });
 
   // ---------- 生成统计 ----------
@@ -902,20 +914,32 @@ function createServer(dataDir, port = 3210) {
       } catch (e) { /* 节点瞬断等，静默 */ }
     }
   }
-  // 从单个节点拉取全量统计并合并（按 id 只新增本机没有的）
-  async function fedPullStatsFrom(base) {
+  // v2.2.0 全量联邦同步：从单个节点拉取全量数据（校验码/项目/分集元数据/统计）合并，
+  // 并补拉本机缺内容文件的分集内容落盘。与 v2.0.9 仅同步统计相比：
+  // - 校验码自动传播 → 解决"新设备没码→登录失败→同步永不启动"的鸡生蛋死结（登录兜底亦调用）
+  // - 分集内容全量落盘 → 每台设备持有全量副本，任何一台设备报废剧本/分镜不丢
+  // 资产文件（图/视频/音频）不走此通道，维持"进入项目时按需缓存"机制（体积考虑）
+  async function fedSyncFromNode(base) {
     try {
-      const r = await fetchTimeout(base + '/federate/stats', {}, 5000);
+      const r = await fetchTimeout(base + '/federate/all', {}, 8000);
       if (!r.ok) return;
       const d = await r.json();
-      if (!Array.isArray(d.stats) || !d.stats.length) return;
-      const ids = new Set(db.stats.map(s => s.id));
-      let n = 0;
-      for (const s of d.stats) if (s && s.id && !ids.has(s.id)) { db.stats.push(s); ids.add(s.id); n++; }
-      if (n) { saveKey('stats', 'stats.json'); console.log('[联邦] 统计补拉 ' + base + ' 新增 ' + n + ' 条'); }
+      const changed = mergeFederateData(d);
+      let eps = 0;
+      for (const e of db.episodes) {
+        if (loadEpisode(e.id)) continue;   // 本机已有内容
+        try {
+          const r2 = await fetchTimeout(base + '/federate/episode/' + e.id + '/content', {}, 5000);
+          if (!r2.ok) continue;   // 源节点也没有内容（分集尚未有人写过）→ 跳过
+          const d2 = await r2.json();
+          if (d2 && d2.data) { saveEpisodeDebounced(e.id, d2.data); eps++; }
+        } catch (e2) { /* 单个分集失败静默 */ }
+      }
+      const sum = changed.projects + changed.codes + changed.episodes + changed.stats;
+      if (sum || eps) console.log('[联邦] 全量同步 ' + base + '：项目+' + changed.projects + ' 校验码+' + changed.codes + ' 分集+' + changed.episodes + ' 统计+' + changed.stats + ' 分集内容+' + eps);
     } catch (e) { /* 节点不在线等，静默 */ }
   }
-  function fedPullAllPeers() { for (const base of fedLivePeers()) fedPullStatsFrom(base); }
+  function fedPullAllPeers() { for (const base of fedLivePeers()) fedSyncFromNode(base); }
   // 启动 8s 后首拉 + 每 60s 互拉：节点在线时间有任何重叠即自动补齐
   setTimeout(fedPullAllPeers, 8000);
   setInterval(fedPullAllPeers, 60000);
@@ -937,7 +961,7 @@ function createServer(dataDir, port = 3210) {
           const known = fedPeers.get(j.http);
           const fresh = known && (nowTs() - known.lastSeen < 120000);
           fedPeers.set(j.http, { http: j.http, nodeId: j.nodeId, lastSeen: nowTs() });
-          if (!fresh) setTimeout(() => fedPullStatsFrom(j.http), 1500);
+          if (!fresh) setTimeout(() => fedSyncFromNode(j.http), 1500);   // v2.2.0 新节点上线即全量同步
         }
       } catch (e) { /* 非 JSON 广播，忽略 */ }
     });
