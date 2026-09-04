@@ -1170,26 +1170,74 @@ function speakerCharOf(s) {
   }
   return inShot[0] || null;
 }
-// 从剧本文本解析运镜指令（用户明确写了运镜 → 用用户的；官方规范：一个镜头只用一种运镜，
-// 指令冲突（如"固定镜头"却被注入"缓慢推近"）是镜头漂移的直接原因）
-function parseCameraDir(text) {
-  const t = String(text || '');
-  const has = kw => t.includes(kw);
-  if (has('固定镜头') || has('固定机位') || has('锁定机位') || has('机位固定')) return '固定镜头，锁定机位（static shot, locked-off camera），全程画面稳定，镜头不移动、不推拉、不摇移';
-  if (has('环绕') || has('旋转镜头')) return '环绕运镜（orbit shot），单一平稳环绕';
-  if (has('跟拍') || has('跟随镜头')) return '跟拍运镜（tracking shot），平稳跟随主体';
-  if (has('拉远') || has('后拉') || has('拉镜头')) return '缓慢拉远（slow pull back）';
-  if (has('推近') || has('推镜头') || has('推进')) return '缓慢推近（slow push-in）';
-  if (has('横摇') || has('摇镜')) return '平稳横摇（pan）';
-  if (has('横移') || has('平移')) return '平稳横移（lateral tracking）';
-  if (has('俯拍') || has('航拍') || has('俯视')) return '俯拍视角（high angle / drone view），缓慢平稳';
-  if (has('仰拍') || has('低角度')) return '仰拍低角度（low angle shot），缓慢平稳';
-  if (has('手持')) return '手持镜头（handheld），轻微自然晃动';
+// ---- 镜头描述三维并行解析（景别 / 视角 / 运镜 互不排斥，全部收集）----
+// 用户原则：剧本里有任何镜头描述就严格按描述生成，绝不从其他维度自动补齐；
+// 只描述了部分维度（如只写"近景""固定视角"）而没写运镜 = 不需要运镜（锁定镜头位置）；
+// 完全没有镜头描述 = 不注入任何镜头指令，交给模型自由决定。
+const CAM_SIZES = [['大特写', '大特写（extreme close-up）'], ['中近景', '中近景（medium close shot）'], ['特写', '特写（close-up）'], ['近景', '近景（medium close-up）'], ['大全景', '大全景（extreme wide shot）'], ['全景', '全景（wide shot）'], ['远景', '远景（long shot）'], ['中景', '中景（medium shot）']];
+const CAM_ANGLES = [['俯拍', '俯拍视角（high angle）'], ['俯视', '俯拍视角（high angle）'], ['航拍', '航拍俯视（aerial / drone view）'], ['鸟瞰', '鸟瞰视角（bird\'s-eye view）'], ['仰拍', '仰拍视角（low angle）'], ['仰视', '仰拍视角（low angle）'], ['低角度', '仰拍低角度（low angle shot）'], ['平视', '平视视角（eye level）']];
+const FIXED_ANGLE_KEYS = ['固定视角', '视角固定', '视角不变', '视角保持', '锁定视角', '视角锁定'];
+const STATIC_KEYS = ['固定镜头', '固定机位', '锁定机位', '机位固定', '镜头固定', '静止镜头'];
+// 运镜类型表：panLike = 该运镜本质上就是视角变化，与"固定视角"矛盾时以更具体的运镜为准
+const CAM_MOVES = [
+  { keys: ['推近', '推进', '推镜头', '推移'], cn: '向前推近', en: 'push-in' },
+  { keys: ['拉远', '后拉', '拉镜头'], cn: '向后拉远', en: 'pull back' },
+  { keys: ['横移', '平移'], cn: '横向移动', en: 'lateral tracking' },
+  { keys: ['摇镜', '横摇', '摇摄', '镜头旋转', '旋转镜头', '左右摇'], cn: '摇镜', en: 'pan', panLike: true },
+  { keys: ['跟拍', '跟随镜头', '跟随拍摄', '跟镜头'], cn: '跟拍', en: 'tracking shot' },
+  { keys: ['环绕', '围绕'], cn: '环绕运镜', en: 'orbit', panLike: true },
+  { keys: ['升降镜头', '镜头上升', '镜头下降', '摇臂'], cn: '升降运镜', en: 'crane shot' },
+  { keys: ['变焦'], cn: '变焦', en: 'zoom' },
+  { keys: ['手持'], cn: '手持镜头', en: 'handheld' }
+];
+const CAM_MODS = ['快速', '急速', '迅速', '缓慢', '缓缓', '慢慢', '轻微', '稍稍'];
+// 取运镜关键词前紧邻的程度修饰词（如"缓慢向前推进"的"缓慢"），保持用户原意不丢失
+function camModBefore(t, pos) {
+  const w = t.slice(Math.max(0, pos - 5), pos);
+  for (let i = CAM_MODS.length - 1; i >= 0; i--) if (w.includes(CAM_MODS[i])) return CAM_MODS[i];
   return '';
+}
+function parseCameraDims(text) {
+  const t = String(text || '');
+  const d = { size: '', angle: '', fixedAngle: false, moves: [], panLike: false, any: false };
+  for (const [k, v] of CAM_SIZES) if (t.includes(k)) { d.size = v; break; }
+  for (const [k, v] of CAM_ANGLES) if (t.includes(k)) { d.angle = v; break; }
+  if (FIXED_ANGLE_KEYS.some(k => t.includes(k))) d.fixedAngle = true;
+  // "固定镜头" = 视角+位置都固定 → 等同固定视角；若同时写了明确运镜（更具体的意图），运镜优先
+  if (STATIC_KEYS.some(k => t.includes(k))) d.fixedAngle = true;
+  for (const m of CAM_MOVES) {
+    for (const k of m.keys) {
+      const p = t.indexOf(k);
+      // 中文术语直接回显用户原词（如"横摇"不说成"摇镜"），修饰词保留，附官方英文术语
+      if (p >= 0) { d.moves.push({ pos: p, str: camModBefore(t, p) + k + '（' + m.en + '）' }); if (m.panLike) d.panLike = true; break; }
+    }
+  }
+  d.moves.sort((a, b) => a.pos - b.pos);   // 按剧本中出现顺序排列，忠实用户表述顺序
+  d.moves = d.moves.map(x => x.str);
+  d.any = !!(d.size || d.angle || d.fixedAngle || d.moves.length);
+  return d;
+}
+// 生成"镜头："指令行；无任何镜头描述时返回空（不注入，交给模型自由决定）
+function cameraLine(text) {
+  const d = parseCameraDims(text);
+  if (!d.any) return '';
+  const segs = [];
+  if (d.size) segs.push(d.size);
+  if (d.angle) segs.push(d.angle);
+  // 固定视角：摇镜/环绕本身就是视角变化，矛盾时以更具体的运镜为准，不加"视角固定"句
+  if (d.fixedAngle && !d.panLike) segs.push('视角方向全程固定不变');
+  if (d.moves.length) {
+    segs.push(...d.moves);
+    return '镜头：' + segs.join('，') + '；除上述描述外不得自行增加任何其他运镜、视角变化或变焦';
+  }
+  // 描述了镜头但没描述运镜 = 不需要运镜：显式锁定镜头位置（视频模型默认爱加运镜，必须压住）
+  segs.push('镜头位置全程固定，不移动、不推拉、不摇移、不变焦');
+  return '镜头：' + segs.join('，');
 }
 // 视频提示词：按 Seedance 2.0 官方提示词规范（主体→动作→镜头→风格→约束）
 // - 前置元素权重更高：参考图身份声明放最前，官方"将@图片N中的…定义为…"句式
-// - 运镜：剧本明确指定时优先用户指令且锁定单一运镜；未指定才用默认
+// - 镜头：三维并行解析（景别/视角/运镜），描述过的维度严格按用户原意翻译、绝不自动补齐；
+//   未写运镜 = 不需要运镜；完全未描述镜头 = 不注入镜头行，交给模型
 // - 台词音色：说话人资产有音色样本 → 强绑定参考音频；无 → AI 自由定音色（首版后服务端自动回绑）
 // - 参考图多时按官方"素材分工"声明，降低特征优先级混淆
 function buildVideoPrompt(s, refs) {
@@ -1214,11 +1262,10 @@ function buildVideoPrompt(s, refs) {
   if (s.dialogue) parts.push(spk && spk.audio
     ? '台词：「' + (spk.name || '角色') + '」用参考音频中的音色（voice timbre）清晰念出台词「' + s.dialogue + '」——参考音频仅决定说话音色与说话方式，台词内容必须严格按剧本文字念出，不得照搬参考音频中的原有语句；口型与所念台词精准同步（lip sync），语气贴合剧情情绪'
     : '台词：角色用符合人物设定的自然音色清晰念出台词「' + s.dialogue + '」，口型与台词精准同步（lip sync），语气贴合剧情情绪');
-  // ④ 镜头：剧本明确指定运镜时用用户的并锁定；未指定才用默认推近
-  const camDir = parseCameraDir(s.text);
-  parts.push('镜头：' + (camDir
-    ? camDir + '。全程仅执行这一种运镜方式，不得自行增加推、拉、摇、移、变焦或视角变化'
-    : '中等景别，缓慢平稳推近（slow push-in），水平视角，全程运镜连贯不切换'));
+  // ④ 镜头：三维并行解析——描述过的维度严格按用户原意翻译、绝不自动补齐其他维度；
+  // 未写运镜 = 不需要运镜（锁定镜头位置）；完全未描述镜头 = 不注入镜头行
+  const cam = cameraLine(s.text);
+  if (cam) parts.push(cam);
   // ⑤ 风格：用户所选风格（后台注入，不进入剧本内容）+ 质感锚点
   const vsDef = VIDEO_STYLES.find(x => x[0] === (S.videoStyle || ''));
   const stylePrompt = vsDef ? vsDef[1] : '高质量动漫风格，柔和自然光，色彩通透';
@@ -1233,7 +1280,8 @@ function buildVideoPrompt(s, refs) {
     if (roleNames.道具.length) g.push('道具外观以道具参考图为准');
     if (g.length) parts.push('素材分工：' + g.join('；') + '，各参考图只影响其声明的部分，互不干扰');
   }
-  parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲，无快速变焦和跳切，背景物体保持稳定' + (vsDef ? '，不得偏离「' + vsDef[0] + '」风格' : ''));
+  // 已注入镜头行时其锁定句已覆盖运镜/变焦约束，负面约束不再重复（避免与用户描述的运镜冲突）
+  parts.push('负面约束：画面不出现文字、水印、字幕，无多余角色入镜，无肢体变形或面部扭曲' + (cam ? '' : '，无快速变焦和跳切') + '，背景物体保持稳定' + (vsDef ? '，不得偏离「' + vsDef[0] + '」风格' : ''));
   return parts.join('。');
 }
 async function genFrameImage(id, field) {
